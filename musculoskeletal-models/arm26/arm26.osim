@@ -989,7 +989,7 @@
 		<!--Forces in the model (includes Actuators).-->
 		<ForceSet name="forceset">
 			<objects>
-				<Thelen2003Muscle name="TRIlong">
+				<Millard2012EquilibriumMuscle name="TRIlong">
 					<!--Flag indicating whether the force is applied or not. If true the forceis applied to the MultibodySystem otherwise the force is not applied.NOTE: Prior to OpenSim 4.0, this behavior was controlled by the 'isDisabled' property, where 'true' meant that force was not being applied. Thus, if 'isDisabled' is true, then 'appliesForce` is false.-->
 					<appliesForce>true</appliesForce>
 					<!--The set of points defining the path of the actuator.-->
@@ -1079,23 +1079,13 @@
 					<!--Maximum contraction velocity of the fibers, in optimal fiberlengths/second-->
 					<max_contraction_velocity>10</max_contraction_velocity>
 					<!--tendon strain at maximum isometric muscle force-->
-					<FmaxTendonStrain>0.033000000000000002</FmaxTendonStrain>
-					<!--passive muscle strain at maximum isometric muscle force-->
-					<FmaxMuscleStrain>0.59999999999999998</FmaxMuscleStrain>
-					<!--shape factor for Gaussian active muscle force-length relationship-->
-					<KshapeActive>0.5</KshapeActive>
-					<!--exponential shape factor for passive force-length relationship-->
-					<KshapePassive>4</KshapePassive>
-					<!--force-velocity shape factor-->
-					<Af>0.29999999999999999</Af>
-					<!--maximum normalized lengthening force-->
-					<Flen>1.8</Flen>
+					<ignore_tendon_compliance>true</ignore_tendon_compliance>
 					<!--Activation time constant, in seconds-->
 					<activation_time_constant>0.01</activation_time_constant>
 					<!--Deactivation time constant, in seconds-->
 					<deactivation_time_constant>0.040000000000000001</deactivation_time_constant>
-				</Thelen2003Muscle>
-				<Thelen2003Muscle name="TRIlat">
+				</Millard2012EquilibriumMuscle>
+				<Millard2012EquilibriumMuscle name="TRIlat">
 					<!--Flag indicating whether the force is applied or not. If true the forceis applied to the MultibodySystem otherwise the force is not applied.NOTE: Prior to OpenSim 4.0, this behavior was controlled by the 'isDisabled' property, where 'true' meant that force was not being applied. Thus, if 'isDisabled' is true, then 'appliesForce` is false.-->
 					<appliesForce>true</appliesForce>
 					<!--The set of points defining the path of the actuator.-->
@@ -1169,23 +1159,13 @@
 					<!--Maximum contraction velocity of the fibers, in optimal fiberlengths/second-->
 					<max_contraction_velocity>10</max_contraction_velocity>
 					<!--tendon strain at maximum isometric muscle force-->
-					<FmaxTendonStrain>0.033000000000000002</FmaxTendonStrain>
-					<!--passive muscle strain at maximum isometric muscle force-->
-					<FmaxMuscleStrain>0.59999999999999998</FmaxMuscleStrain>
-					<!--shape factor for Gaussian active muscle force-length relationship-->
-					<KshapeActive>0.5</KshapeActive>
-					<!--exponential shape factor for passive force-length relationship-->
-					<KshapePassive>4</KshapePassive>
-					<!--force-velocity shape factor-->
-					<Af>0.29999999999999999</Af>
-					<!--maximum normalized lengthening force-->
-					<Flen>1.8</Flen>
+					<ignore_tendon_compliance>true</ignore_tendon_compliance>
 					<!--Activation time constant, in seconds-->
 					<activation_time_constant>0.01</activation_time_constant>
 					<!--Deactivation time constant, in seconds-->
 					<deactivation_time_constant>0.040000000000000001</deactivation_time_constant>
-				</Thelen2003Muscle>
-				<Thelen2003Muscle name="TRImed">
+				</Millard2012EquilibriumMuscle>
+				<Millard2012EquilibriumMuscle name="TRImed">
 					<!--Flag indicating whether the force is applied or not. If true the forceis applied to the MultibodySystem otherwise the force is not applied.NOTE: Prior to OpenSim 4.0, this behavior was controlled by the 'isDisabled' property, where 'true' meant that force was not being applied. Thus, if 'isDisabled' is true, then 'appliesForce` is false.-->
 					<appliesForce>true</appliesForce>
 					<!--The set of points defining the path of the actuator.-->
@@ -1259,23 +1239,13 @@
 					<!--Maximum contraction velocity of the fibers, in optimal fiberlengths/second-->
 					<max_contraction_velocity>10</max_contraction_velocity>
 					<!--tendon strain at maximum isometric muscle force-->
-					<FmaxTendonStrain>0.033000000000000002</FmaxTendonStrain>
-					<!--passive muscle strain at maximum isometric muscle force-->
-					<FmaxMuscleStrain>0.59999999999999998</FmaxMuscleStrain>
-					<!--shape factor for Gaussian active muscle force-length relationship-->
-					<KshapeActive>0.5</KshapeActive>
-					<!--exponential shape factor for passive force-length relationship-->
-					<KshapePassive>4</KshapePassive>
-					<!--force-velocity shape factor-->
-					<Af>0.29999999999999999</Af>
-					<!--maximum normalized lengthening force-->
-					<Flen>1.8</Flen>
+					<ignore_tendon_compliance>true</ignore_tendon_compliance>
 					<!--Activation time constant, in seconds-->
 					<activation_time_constant>0.01</activation_time_constant>
 					<!--Deactivation time constant, in seconds-->
 					<deactivation_time_constant>0.040000000000000001</deactivation_time_constant>
-				</Thelen2003Muscle>
-				<Thelen2003Muscle name="BIClong">
+				</Millard2012EquilibriumMuscle>
+				<Millard2012EquilibriumMuscle name="BIClong">
 					<!--Flag indicating whether the force is applied or not. If true the forceis applied to the MultibodySystem otherwise the force is not applied.NOTE: Prior to OpenSim 4.0, this behavior was controlled by the 'isDisabled' property, where 'true' meant that force was not being applied. Thus, if 'isDisabled' is true, then 'appliesForce` is false.-->
 					<appliesForce>true</appliesForce>
 					<!--The set of points defining the path of the actuator.-->
@@ -1373,23 +1343,13 @@
 					<!--Maximum contraction velocity of the fibers, in optimal fiberlengths/second-->
 					<max_contraction_velocity>10</max_contraction_velocity>
 					<!--tendon strain at maximum isometric muscle force-->
-					<FmaxTendonStrain>0.033000000000000002</FmaxTendonStrain>
-					<!--passive muscle strain at maximum isometric muscle force-->
-					<FmaxMuscleStrain>0.59999999999999998</FmaxMuscleStrain>
-					<!--shape factor for Gaussian active muscle force-length relationship-->
-					<KshapeActive>0.5</KshapeActive>
-					<!--exponential shape factor for passive force-length relationship-->
-					<KshapePassive>4</KshapePassive>
-					<!--force-velocity shape factor-->
-					<Af>0.29999999999999999</Af>
-					<!--maximum normalized lengthening force-->
-					<Flen>1.8</Flen>
+					<ignore_tendon_compliance>true</ignore_tendon_compliance>
 					<!--Activation time constant, in seconds-->
 					<activation_time_constant>0.01</activation_time_constant>
 					<!--Deactivation time constant, in seconds-->
 					<deactivation_time_constant>0.040000000000000001</deactivation_time_constant>
-				</Thelen2003Muscle>
-				<Thelen2003Muscle name="BICshort">
+				</Millard2012EquilibriumMuscle>
+				<Millard2012EquilibriumMuscle name="BICshort">
 					<!--Flag indicating whether the force is applied or not. If true the forceis applied to the MultibodySystem otherwise the force is not applied.NOTE: Prior to OpenSim 4.0, this behavior was controlled by the 'isDisabled' property, where 'true' meant that force was not being applied. Thus, if 'isDisabled' is true, then 'appliesForce` is false.-->
 					<appliesForce>true</appliesForce>
 					<!--The set of points defining the path of the actuator.-->
@@ -1460,23 +1420,13 @@
 					<!--Maximum contraction velocity of the fibers, in optimal fiberlengths/second-->
 					<max_contraction_velocity>10</max_contraction_velocity>
 					<!--tendon strain at maximum isometric muscle force-->
-					<FmaxTendonStrain>0.033000000000000002</FmaxTendonStrain>
-					<!--passive muscle strain at maximum isometric muscle force-->
-					<FmaxMuscleStrain>0.59999999999999998</FmaxMuscleStrain>
-					<!--shape factor for Gaussian active muscle force-length relationship-->
-					<KshapeActive>0.5</KshapeActive>
-					<!--exponential shape factor for passive force-length relationship-->
-					<KshapePassive>4</KshapePassive>
-					<!--force-velocity shape factor-->
-					<Af>0.29999999999999999</Af>
-					<!--maximum normalized lengthening force-->
-					<Flen>1.8</Flen>
+					<ignore_tendon_compliance>true</ignore_tendon_compliance>
 					<!--Activation time constant, in seconds-->
 					<activation_time_constant>0.01</activation_time_constant>
 					<!--Deactivation time constant, in seconds-->
 					<deactivation_time_constant>0.040000000000000001</deactivation_time_constant>
-				</Thelen2003Muscle>
-				<Thelen2003Muscle name="BRA">
+				</Millard2012EquilibriumMuscle>
+				<Millard2012EquilibriumMuscle name="BRA">
 					<!--Flag indicating whether the force is applied or not. If true the forceis applied to the MultibodySystem otherwise the force is not applied.NOTE: Prior to OpenSim 4.0, this behavior was controlled by the 'isDisabled' property, where 'true' meant that force was not being applied. Thus, if 'isDisabled' is true, then 'appliesForce` is false.-->
 					<appliesForce>true</appliesForce>
 					<!--The set of points defining the path of the actuator.-->
@@ -1532,22 +1482,12 @@
 					<!--Maximum contraction velocity of the fibers, in optimal fiberlengths/second-->
 					<max_contraction_velocity>10</max_contraction_velocity>
 					<!--tendon strain at maximum isometric muscle force-->
-					<FmaxTendonStrain>0.033000000000000002</FmaxTendonStrain>
-					<!--passive muscle strain at maximum isometric muscle force-->
-					<FmaxMuscleStrain>0.59999999999999998</FmaxMuscleStrain>
-					<!--shape factor for Gaussian active muscle force-length relationship-->
-					<KshapeActive>0.5</KshapeActive>
-					<!--exponential shape factor for passive force-length relationship-->
-					<KshapePassive>4</KshapePassive>
-					<!--force-velocity shape factor-->
-					<Af>0.29999999999999999</Af>
-					<!--maximum normalized lengthening force-->
-					<Flen>1.8</Flen>
+					<ignore_tendon_compliance>true</ignore_tendon_compliance>
 					<!--Activation time constant, in seconds-->
 					<activation_time_constant>0.01</activation_time_constant>
 					<!--Deactivation time constant, in seconds-->
 					<deactivation_time_constant>0.040000000000000001</deactivation_time_constant>
-				</Thelen2003Muscle>
+				</Millard2012EquilibriumMuscle>
 			</objects>
 			<groups />
 		</ForceSet>

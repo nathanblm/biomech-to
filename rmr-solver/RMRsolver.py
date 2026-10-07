@@ -113,14 +113,7 @@ class RMRsolver:
         self.muscleForceMax = []
 
         for i in range(self.muscleNum):
-
-            # Allow multiple muscle types
-            muscle = opensim.Muscle.safeDownCast(muscleSet.get(i))
-            
-            if muscle is None:
-                raise TypeError(f"{muscleSet.get(i).getName()} is not an OpenSim Muscle")
-            self.muscles.append(muscle)
-
+            self.muscles.append(opensim.Millard2012EquilibriumMuscle.safeDownCast(muscleSet.get(i)))
             self.muscleNames.append(self.muscles[i].getName())
             self.muscles[i].set_ignore_tendon_compliance(True)
             self.muscles[i].set_ignore_activation_dynamics(True)
