@@ -756,7 +756,7 @@
 						<Coordinate name="r_shoulder_plane">
 							<default_value>0</default_value>
 							<default_speed_value>0</default_speed_value>
-							<range>-3.1415926500000002 3.1415926500000002</range>
+							<range>-1.5707963300000001 3.1415926500000002</range>
 							<clamped>false</clamped>
 							<locked>false</locked>
 							<prescribed_function />
