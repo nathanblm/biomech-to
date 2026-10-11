@@ -29,3 +29,7 @@ def save_motion_sto(path, time, states, state_labels):
             file.write("\t".join(f"{value:.12g}" for value in row) + "\n")
 
     return path
+
+def scientific_int(value: int) -> str:
+    mantissa, exponent = f"{value:.0e}".split("e")
+    return f"{mantissa}e{int(exponent)}"

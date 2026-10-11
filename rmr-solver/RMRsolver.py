@@ -460,10 +460,17 @@ class RMRsolver:
             print(f"xDelta = {xDeltaUsed}")
             print(f"Time elapsed = {timeElapsed}")
         
+        # Compute total muscle forces for every solve. This is independent of
+        # whether joint reaction forces were requested.
+        forceTotal = (
+            np.asarray(muscleForceActiveMax)
+            * activation[:self.muscleNum]
+            + np.asarray(muscleForcePassiveMax)
+        )
+
         # Acquire joint reaction forces for joints specified in outputJoints:
         if not self.jointNum == 0:
             # Initialize the muscles to produce the required forces
-            forceTotal = muscleForceActiveMax * activation[:self.muscleNum] + muscleForcePassiveMax
             for i, muscle in enumerate(self.muscles):
                 muscle.setOverrideActuation(self.state, forceTotal[i])
 
@@ -512,4 +519,4 @@ class RMRsolver:
         # Convert reserve actuator 'activation' to forces
         activation[self.muscleNum:] = activation[self.muscleNum:] * self.actuatorReserveOptimalForce
         
-        return activation, jointForces, info
+        return activation, jointForces, forceTotal, info
