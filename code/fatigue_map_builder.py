@@ -9,10 +9,13 @@ from itertools import islice
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from rmr_solver import RMRsolver, ActSquared
 
+
 osim.Logger.setLevelString("Error")
+
 
 _worker_context = None
 _worker_output = None
+
 
 def _init_worker(model_path, model_info, activation_dynamics=False):
     global _worker_context, _worker_output
@@ -37,6 +40,10 @@ def _cast_millard(muscle):
             f"'{muscle.getName()}'; got {muscle.getConcreteClassName()}."
         )
     return cast
+
+def _scientific_int(value: int) -> str:
+    mantissa, exponent = f"{value:.0e}".split("e")
+    return f"{mantissa}e{int(exponent)}"
 
 @dataclass
 class ModelInfo:
@@ -143,6 +150,19 @@ class Results:
     activations: np.ndarray                     # (n_samples, n_forces, n_muscles)
     muscle_forces: np.ndarray                   # (n_samples, n_forces, n_muscles)
     success: np.ndarray                         # (n_samples, n_forces)
+    fatigue_map: np.ndarray                     # (n_samples, n_forces, n_muscles)
+    fatigue_dominance_map: np.ndarray           # (n_samples, n_forces, n_muscles)
+
+    @classmethod
+    def empty(cls):
+        return cls(
+            activations=np.empty((0, 0, 0)),
+            muscle_forces=np.empty((0, 0, 0)),
+            success=np.empty((0, 0), dtype=bool),
+            fatigue_map=np.empty((0, 0, 0)),
+            fatigue_dominance_map=np.empty((0, 0, 0))
+        )
+
 
 class RMRWorkerContext:
     def __init__(self, model, model_info, activation_dynamics=False):
@@ -204,10 +224,35 @@ class FatigueMapBuilder:
         self.state = model.initSystem()
 
         self.samples = Samples.empty(n_joint_coordinates=len(info.joint_coordinate_names))
+        self.results = Results.empty()
 
     @classmethod
     def from_model(cls, model, *, model_path=None):
-        return cls(model, ModelInfo.from_model(model), model_path=model_path)
+        builder = cls(model, ModelInfo.from_model(model), model_path=model_path)
+        return builder
+
+    @classmethod
+    def from_npz(cls, model, npz_path, *, model_path=None):
+        builder = cls.from_model(model, model_path=model_path)
+
+        with np.load(npz_path) as data:
+            builder.samples = Samples(
+                joint_coordinates=data["joint_coordinates"],
+                cartesian_coordinates=data["cartesian_coordinates"],
+                force_magnitudes=data["force_magnitudes"],
+                force_directions=data["force_directions"],
+                forces=data["forces"]
+            )
+
+            builder.results = Results(
+                activations=data["activations"],
+                muscle_forces=data["muscle_forces"],
+                success=data["success"],
+                fatigue_map=data.get("fatigue_map"),
+                fatigue_dominance_map=data.get("fatigue_dominance_map")
+            )
+
+        return builder
 
     def generate_position_samples(self, n_samples: int):
 
@@ -335,22 +380,86 @@ class FatigueMapBuilder:
                     if next_task is not None:
                         pending.add(pool.submit(_solve_task, next_task))
 
-        self.results = Results(activations, muscle_forces, success)
+        self.results.activations = activations
+        self.results.muscle_forces = muscle_forces
+        self.results.success = success
+
         return self.results
-              
+
+    def compute_fatigue_map(self, *, T=10.0, F=None):
+        if F is None:
+            F = self.info.muscle_max_forces
+
+        # based on formula from https://doi.org/10.1016/j.rcim.2019.01.013
+        C = - ( T * F ) / np.log(1 - 0.993)
+
+        fatigue_map = self.results.muscle_forces / C[None, None, :]
+        self.results.fatigue_map = fatigue_map
+        return fatigue_map
+
+    def compute_fatigue_dominance_map(self, agonists, antagonists):
+        agonist_indices = [self.info.muscle_names.index(name) for name in agonists]
+        antagonist_indices = [self.info.muscle_names.index(name) for name in antagonists]
+
+        agonist_fatigue = self.results.fatigue_map[:, :, agonist_indices].sum(axis=2)
+        antagonist_fatigue = self.results.fatigue_map[:, :, antagonist_indices].sum(axis=2)
+
+        numerator = agonist_fatigue - antagonist_fatigue
+        denominator = agonist_fatigue + antagonist_fatigue
+
+        fatigue_dominance_map = np.divide(
+            numerator,
+            denominator,
+            out=np.zeros_like(numerator),
+            where=denominator != 0
+        )
+
+        self.results.fatigue_dominance_map = fatigue_dominance_map
+        return fatigue_dominance_map
+
+    def save_results(self, results_dir=None):
+        if results_dir is None:
+            ROOT = Path(__file__).parent.parent
+            results_dir = ROOT / "results" / self.model.getName()
+
+        results_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = (
+            f"p{_scientific_int(self.samples.joint_coordinates.shape[0])}"
+            f"_m{self.samples.force_magnitudes.shape[0]}"
+            f"_d{self.samples.force_directions.shape[0]}.npz"
+        )
+
+        np.savez_compressed(
+            results_dir / filename,
+            joint_coordinates=self.samples.joint_coordinates,
+            cartesian_coordinates=self.samples.cartesian_coordinates,
+            force_magnitudes=self.samples.force_magnitudes,
+            force_directions=self.samples.force_directions,
+            forces=self.samples.forces,
+            activations=self.results.activations,
+            muscle_forces=self.results.muscle_forces,
+            success=self.results.success,
+            fatigue_map=self.results.fatigue_map,
+            fatigue_dominance_map=self.results.fatigue_dominance_map
+        )
+
+
 if __name__ == "__main__":
     from opensim import Model
 
     ROOT = Path(__file__).parent.parent
-    model_path = ROOT / "musculoskeletal_models" / "arm26_3dof" / "arm26.osim"
+    model_path = ROOT / "musculoskeletal_models" / "arm26_3DOF" / "arm26_3DOF.osim"
+    #npz_path = ROOT / "results" / "arm26_3DOF" / "p1e3_m1_d1.npz"
     model = Model(str(model_path))
 
-    fatigue_map_builder = FatigueMapBuilder.from_model(model, model_path=model_path)
+    #fatigue_map_builder = FatigueMapBuilder.from_npz(model, npz_path, model_path=model_path)
 
-    fatigue_map_builder.generate_position_samples(n_samples=1000000)
+    fatigue_map_builder = FatigueMapBuilder.from_model(model, model_path=model_path)
+    fatigue_map_builder.generate_position_samples(n_samples=1000)
 
     one_direction = np.array([[1.0, 0.0, 0.0]])
-    one_magnitude = np.array([10.0])
+    one_magnitude = np.array([20.0])
 
     #n_magnitudes = 1
     #n_directions = 3
@@ -367,4 +476,11 @@ if __name__ == "__main__":
         activation_dynamics=False
     )
 
-    print(fatigue_map_builder.results.activations.shape)
+    fatigue_map_builder.compute_fatigue_map()
+
+    agonists = ["TRImed", "TRIlat", "TRIlong"]
+    antagonists = ["BICshort", "BIClong", "BRA"]
+
+    fatigue_map_builder.compute_fatigue_dominance_map(agonists, antagonists)
+
+    fatigue_map_builder.save_results()
