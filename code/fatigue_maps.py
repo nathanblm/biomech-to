@@ -208,51 +208,8 @@ class FatigueMap(osim.DecorativeGeometryImplementation):
     ##           FATIGUE            ##
     ##################################
 
-    def compute_static_activation_map(self, model_path, force_index, workers=4):
-        forces = self.staticForces
-        tasks = (
-            (i, j, q, force)
-            for i, q in enumerate(self.freeCoordSamples)
-            for j, force in enumerate(forces)
-        )                                           # shape (n_coordSamples * n_forces, 4)
-
-        shape = (len(self.freeCoordSamples), len(forces))   # shape (n_coordSamples, n_forces)
-        self.staticActivations = np.full(
-            (*shape, self.muscleNum), np.nan
-        )                                                  # shape (n_coordSamples, n_forces, n_muscles)
-        self.staticActivationsSuccess = np.zeros(shape, dtype=bool)
-        self.staticForces = forces
-
-        with ProcessPoolExecutor(
-            max_workers=workers,
-            mp_context=mp.get_context("spawn"),
-            initializer=init_worker,
-            initargs=(model_path, force_index, self.freeCoordNames),
-        ) as pool, tqdm(total=shape[0] * shape[1], desc="Static activation map",
-                        unit="solve", dynamic_ncols=True) as progress:
-            # Keep a small queue; count results in completion order.
-            pending = {pool.submit(solve_sample_activation, task)
-                       for task in islice(tasks, workers * 2)}
-            failed = 0
-            while pending:
-                done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                for future in done:
-                    i, j, activation, ok = future.result()
-                    self.staticActivationsSuccess[i, j] = ok
-                    self.staticActivations[i, j] = activation
-                    if not ok:
-                        failed += 1
-                    progress.set_postfix(failed=failed, refresh=False)
-                    progress.update(1)
-                    task = next(tasks, None)
-                    if task is not None:
-                        pending.add(pool.submit(solve_sample_activation, task))
-
-        return self.staticActivations, self.staticActivationsSuccess
-
-    def compute_muscle_force_map(self, model_path, force_index, workers=4):
-        # Reuse saved force samples when available. FmagSamples and
-        # FdirSamples are not restored when loading a saved force array.
+    def compute_static_maps(self, model_path, force_index, workers=4):
+        """Compute activations and muscle forces in one solver pass per sample."""
         forces = np.asarray(self.staticForces)
 
         tasks = (
@@ -262,9 +219,13 @@ class FatigueMap(osim.DecorativeGeometryImplementation):
         )                                           # shape (n_coordSamples * n_forces, 4)
 
         shape = (len(self.freeCoordSamples), len(forces))   # shape (n_coordSamples, n_forces)
+        self.staticActivations = np.full(
+            (*shape, self.muscleNum), np.nan
+        )
         self.staticMuscleForces = np.full(
             (*shape, self.muscleNum), np.nan
-        )                                                  # shape (n_coordSamples, n_forces, n_muscles)
+        )
+        self.staticActivationsSuccess = np.zeros(shape, dtype=bool)
         self.staticForcesSuccess = np.zeros(shape, dtype=bool)
         self.staticForces = forces
 
@@ -273,16 +234,18 @@ class FatigueMap(osim.DecorativeGeometryImplementation):
             mp_context=mp.get_context("spawn"),
             initializer=init_worker,
             initargs=(model_path, force_index, self.freeCoordNames),
-        ) as pool, tqdm(total=shape[0] * shape[1], desc="Static muscle force map",
+        ) as pool, tqdm(total=shape[0] * shape[1], desc="Static maps",
                         unit="solve", dynamic_ncols=True) as progress:
             # Keep a small queue; count results in completion order.
-            pending = {pool.submit(solve_sample_muscle_forces, task)
+            pending = {pool.submit(solve_sample, task)
                        for task in islice(tasks, workers * 2)}
             failed = 0
             while pending:
                 done, pending = wait(pending, return_when=FIRST_COMPLETED)
                 for future in done:
-                    i, j, muscle_forces, ok = future.result()
+                    i, j, muscle_activations, muscle_forces, ok = future.result()
+                    self.staticActivations[i, j] = muscle_activations
+                    self.staticActivationsSuccess[i, j] = ok
                     self.staticForcesSuccess[i, j] = ok
                     self.staticMuscleForces[i, j] = muscle_forces
                     if not ok:
@@ -291,9 +254,14 @@ class FatigueMap(osim.DecorativeGeometryImplementation):
                     progress.update(1)
                     task = next(tasks, None)
                     if task is not None:
-                        pending.add(pool.submit(solve_sample_muscle_forces, task))
+                        pending.add(pool.submit(solve_sample, task))
 
-        return self.staticMuscleForces, self.staticForcesSuccess
+        return (
+            self.staticActivations,
+            self.staticMuscleForces,
+            self.staticActivationsSuccess,
+            self.staticForcesSuccess,
+        )
 
     def set_muscle_capacity_param(self, T=10.0, F=None):
         """Compute the fatigue capacity parameter for a given reference force and time duration."""
@@ -316,7 +284,15 @@ class FatigueMap(osim.DecorativeGeometryImplementation):
         agonist_fatigue = np.sum(self.FatigueMap[:, :, agonist_indices], axis=2)
         antagonist_fatigue = np.sum(self.FatigueMap[:, :, antagonist_indices], axis=2)
 
-        self.FatigueDominanceMap = agonist_fatigue - antagonist_fatigue     # shape (n_coordSamples, n_forces
+        numerator = agonist_fatigue - antagonist_fatigue
+        denominator = agonist_fatigue + antagonist_fatigue
+
+        self.FatigueDominanceMap = np.divide(
+            numerator,
+            denominator,
+            out=np.zeros_like(numerator),
+            where=denominator > 1e-12
+        )
         return self.FatigueDominanceMap
 
     ##################################
@@ -616,6 +592,78 @@ class FatigueMap(osim.DecorativeGeometryImplementation):
         self._simbody_force_visual(force)
         return self._simbody_points_overlay(points, radius, colors, opacity)
 
+    def _fatigue_dominance_values(self, force, filter_success=True):
+        """Return signed fatigue-dominance values already bounded to [-1, 1]."""
+        if not hasattr(self, "FatigueDominanceMap") or self.FatigueDominanceMap.size == 0:
+            raise ValueError("Fatigue dominance map has not been computed yet.")
+        if force < 0 or force >= self.FatigueDominanceMap.shape[1]:
+            raise IndexError(f"Force index {force} is outside the available force samples.")
+
+        values = self.FatigueDominanceMap[:, force]
+        mask = np.isfinite(values)
+        if filter_success:
+            mask &= self.staticForcesSuccess[:, force]
+        if not np.any(mask):
+            raise ValueError(f"No valid fatigue-dominance samples for force {force}.")
+
+        normalized = np.clip(values, -1.0, 1.0)
+        return values, mask, normalized
+
+    def _simbody_fatigue_dominance_title(self, force):
+        """Show the dominance groups and symmetric color scale in the caption."""
+        visualizer = self.model.getVisualizer().updSimbodyVisualizer()
+        magnitude = np.linalg.norm(self.staticForces[force])
+        agonists = ", ".join(getattr(self, "fatigueDominanceAgonists", ("agonists",)))
+        antagonists = ", ".join(getattr(self, "fatigueDominanceAntagonists", ("antagonists",)))
+        self._activation_caption = (
+            f"Dominance: {agonists} - {antagonists} | Force {force}: {magnitude:.2f} N | "
+            "scale: [-1, +1]"
+        )
+        if not hasattr(self, "_activation_label_id"):
+            label = osim.DecorativeText(self._activation_caption)
+            label.setIsScreenText(True)
+            label.setColor(osim.Vec3(1.0, 0.4, 0.1))
+            ground = self.model.getGround().getMobilizedBodyIndex()
+            self._activation_label_id = visualizer.addDecoration(
+                ground, osim.Transform(), label
+            )
+        else:
+            visualizer.updDecoration(self._activation_label_id).implementGeometry(self)
+
+    def simbody_3D_fatigue_dominance_visual(self, force, radius=0.002,
+                                            opacity=0.5, filter_success=True):
+        """Visualize signed fatigue dominance over the full endpoint workspace.
+
+        Positive values indicate greater agonist fatigue accumulation; negative
+        values indicate greater antagonist fatigue accumulation.
+        """
+        _, mask, normalized = self._fatigue_dominance_values(
+            force, filter_success
+        )
+        points = self.reachWorkspace[mask]
+        colors = plt.get_cmap("coolwarm")((normalized[mask] + 1.0) / 2.0)[:, :3]
+
+        self._simbody_fatigue_dominance_title(force)
+        self._simbody_force_visual(force)
+        return self._simbody_points_overlay(points, radius, colors, opacity)
+
+    def simbody_2D_fatigue_dominance_visual(self, force, y_offset,
+                                            shoulder_marker="r_acromion",
+                                            tolerance=0.01, radius=0.006,
+                                            opacity=0.5, filter_success=True):
+        """Visualize signed fatigue dominance on a shoulder-offset workspace slice."""
+        plane, _ = self._workspace_slice(y_offset, shoulder_marker, tolerance)
+        _, mask, normalized = self._fatigue_dominance_values(
+            force, filter_success
+        )
+        mask &= np.abs(self.reachWorkspace[:, 1] - plane[1]) <= tolerance
+        points = self.reachWorkspace[mask]
+        colors = plt.get_cmap("coolwarm")((normalized[mask] + 1.0) / 2.0)[:, :3]
+
+        self._simbody_fatigue_dominance_title(force)
+        self._simbody_force_visual(force)
+        return self._simbody_points_overlay(points, radius, colors, opacity)
+
 ##################################
 ##     PARALLEL PROCESSING      ##
 ##################################
@@ -643,7 +691,7 @@ def init_worker(model_path, force_index, coordinate_names):
         for name in solver.coordinateFreeNames
     ]
 
-def solve_sample_activation(task):
+def solve_sample(task):
     i, j, q, force = task
 
     solver.x0 = initial_guess.copy()
@@ -658,48 +706,48 @@ def solve_sample_activation(task):
     )
 
     muscle_activations = activations[solver.actuatorMuscleIndex]
-    return i, j, muscle_activations, info["success"]
-
-def solve_sample_muscle_forces(task):
-    i, j, q, force = task
-
-    solver.x0 = initial_guess.copy()
-    zeros = np.zeros(solver.coordinateFreeNum)
-
-    activations, joint_forces, muscle_forces, info = solver.solve(
-        time=0.0,
-        position=q[coordinate_order],
-        speed=zeros,
-        acceleration=zeros,
-        values_prescribed_forces=np.r_[force, np.zeros(3)],
-    )
-
-    return i, j, muscle_forces, info["success"]
+    return i, j, muscle_activations, muscle_forces, info["success"]
 
 if __name__ == "__main__":
 
-    model_str = "arm26"  # or "ts-model"
+    model_str = "ts-model"  # or "arm26-3dof" or "ts-model"
 
     model_configs = {
-        "arm26": {
-            "model_path": PROJECT_ROOT / "musculoskeletal-models/arm26/arm26.osim",
+        "arm26-4dof": {
+            "model_path": PROJECT_ROOT / "musculoskeletal-models/arm26-4dof/arm26.osim",
             "endpoint_kwargs": {"endpoint_marker": "r_radius_styloid"},
-            "coord_sample_size": 100000,
-            "force_dir_sample_size": 2,
+            "coord_sample_size": 10000,
+            "force_dir_sample_size": 12,
             "force_mag_sample_size": 1,
             "shoulder_marker": "r_acromion",
             "y_offset": -0.1,
             "workers": 12,
+            "agonists": ["TRImed", "TRIlat", "TRIlong"],
+            "antagonists": ["BICshort", "BIClong", "BRA"],
+        },
+        "arm26-3dof": {
+            "model_path": PROJECT_ROOT / "musculoskeletal-models/arm26-3dof/arm26.osim",
+            "endpoint_kwargs": {"endpoint_marker": "r_radius_styloid"},
+            "coord_sample_size": 10000,
+            "force_dir_sample_size": 6,
+            "force_mag_sample_size": 1,
+            "shoulder_marker": "r_acromion",
+            "y_offset": -0.1,
+            "workers": 12,
+            "agonists": ["BICshort", "BIClong", "BRA"],
+            "antagonists": ["TRImed", "TRIlat", "TRIlong"],
         },
         "ts-model": {
             "model_path": PROJECT_ROOT / "musculoskeletal-models/ts-model/TSM_subject_noWeight.osim",
             "endpoint_kwargs": {"endpoint_body": "hand"},
-            "coord_sample_size": 400000,
+            "coord_sample_size": 1000000,
             "force_dir_sample_size": 3,
             "force_mag_sample_size": 1,
             "shoulder_marker": "ac",
             "y_offset": -0.1,
             "workers": 12,
+            "agonists": ["BIC_long", "BIC_brevis"],
+            "antagonists": ["TRIlong"]
         },
     }
 
@@ -745,20 +793,6 @@ if __name__ == "__main__":
         f"static_act_success_p{fatigue_map.coordSampleSize}"
         f"_F{fatigue_map.FmagSampleSize}_D{fatigue_map.FdirSampleSize}"
     )
-    # see if static activations and success have already been computed and saved to disk
-    try:
-        fatigue_map.staticActivations = np.load(results_dir / f"{file_static_act}.npy")
-        fatigue_map.staticActivationsSuccess = np.load(results_dir / f"{file_static_act_success}.npy")
-    except FileNotFoundError:
-        fatigue_map.compute_static_activation_map(
-            model_path,
-            force_index=fatigue_map.prescribedForceIndexes[0],
-            workers=config["workers"],
-        )
-        np.save(results_dir / f"{file_static_act}.npy", fatigue_map.staticActivations)
-        np.save(results_dir / f"{file_static_act_success}.npy", fatigue_map.staticActivationsSuccess)
-
-
     file_static_mf = (
         f"static_mf_p{fatigue_map.coordSampleSize}"
         f"_F{fatigue_map.FmagSampleSize}_D{fatigue_map.FdirSampleSize}"
@@ -767,35 +801,49 @@ if __name__ == "__main__":
         f"static_mf_success_p{fatigue_map.coordSampleSize}"
         f"_F{fatigue_map.FmagSampleSize}_D{fatigue_map.FdirSampleSize}"
     )
-    # see if static muscle forces and success have already been computed and saved to disk
+    # Load both maps together. If either map is missing, compute both in one
+    # solver pass per coordinate/force sample.
     try:
+        fatigue_map.staticActivations = np.load(results_dir / f"{file_static_act}.npy")
+        fatigue_map.staticActivationsSuccess = np.load(results_dir / f"{file_static_act_success}.npy")
         fatigue_map.staticMuscleForces = np.load(results_dir / f"{file_static_mf}.npy")
         fatigue_map.staticForcesSuccess = np.load(results_dir / f"{file_static_mf_success}.npy")
     except FileNotFoundError:
-        fatigue_map.compute_muscle_force_map(
+        pass
+        fatigue_map.compute_static_maps(
             model_path,
             force_index=fatigue_map.prescribedForceIndexes[0],
             workers=config["workers"],
         )
+        np.save(results_dir / f"{file_static_act}.npy", fatigue_map.staticActivations)
+        np.save(results_dir / f"{file_static_act_success}.npy", fatigue_map.staticActivationsSuccess)
         np.save(results_dir / f"{file_static_mf}.npy", fatigue_map.staticMuscleForces)
         np.save(results_dir / f"{file_static_mf_success}.npy", fatigue_map.staticForcesSuccess)
 
-"""
-    for i, muscle in enumerate(fatigue_map.muscleNames):
-        for force in range(fatigue_map.staticForces.shape[0]):
-                if i != 0:
-                    input(f"Press Enter to continue to the next muscle ({muscle}) and force ({force})...")
-                fatigue_map.simbody_2D_activation_visual(
-                    muscle=muscle,
-                    force=force,
-                    y_offset=config["y_offset"],
-                    shoulder_marker=config["shoulder_marker"],
-                    tolerance=0.1,
-                    radius=0.006,
-                    opacity=1.0,
-                    filter_success=True,
-                )
 
+    fatigue_map.set_muscle_capacity_param(T=10.0)
+    fatigue_map.compute_fatigue_accum_map()
+    fatigue_map.compute_fatigue_accum_dominance_map(
+        agonists=config.get("agonists", []),
+        antagonists=config.get("antagonists", []),
+    )
+
+
+    
+    for force in range(fatigue_map.staticForces.shape[0]):
+        if force != 0:
+            input(f"Press Enter to continue to the next force ({force})...")
+        fatigue_map.simbody_2D_fatigue_dominance_visual(
+            force=force, 
+            y_offset=config["y_offset"], 
+            shoulder_marker=config["shoulder_marker"], 
+            tolerance=0.05, 
+            radius=0.005, 
+            opacity=1.0, 
+            filter_success=True
+        )
+
+"""
     for i, muscle in enumerate(fatigue_map.muscleNames):
         for force in range(fatigue_map.staticForces.shape[0]):
                 if i != 0:
