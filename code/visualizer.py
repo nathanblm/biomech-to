@@ -70,10 +70,10 @@ class MapData:
 
 
 class SimbodyRenderer:
-    def __init__(self, model_path, endpoint_marker="endpoint"):
+    def __init__(self, model, endpoint_marker="endpoint"):
         import opensim as osim
         self.osim = osim
-        self.model = osim.Model(str(model_path))
+        self.model = osim.Model(str(model)) if isinstance(model, (str, Path)) else osim.Model(model)
         self.model.setUseVisualizer(True)
         self.state = self.model.initSystem()
         self.model.realizePosition(self.state)
@@ -181,8 +181,22 @@ class Visualizer:
         "dominance": ("fatigue_dominance_map", "Fatigue dominance", "coolwarm", (-1, 1)),
     }
 
-    def __init__(self, data: MapData, *, model_path=None, muscle_names=None,
+    def __init__(self, model=None, *, data: Optional[MapData] = None,
+                 model_path=None, muscle_names=None,
                  endpoint_marker="endpoint"):
+        """Use an OpenSim model for motion export and optional MapData for plots."""
+        # Preserve the existing Visualizer(data, model_path=...) calling form.
+        if isinstance(model, MapData):
+            if data is not None:
+                raise ValueError("Map data was supplied twice.")
+            data, model = model, None
+        if isinstance(model, (str, Path)):
+            if model_path is not None:
+                raise ValueError("Provide either model or model_path.")
+            model_path, model = model, None
+        if model is not None and model_path is not None:
+            raise ValueError("Provide either model or model_path.")
+        self.model = model
         self.data = data
         self.model_path = (
             Path(model_path).expanduser().resolve()
@@ -190,8 +204,10 @@ class Visualizer:
             else None
         )
         self.endpoint_marker = endpoint_marker
-        self.muscle_names = tuple(data.muscle_names if muscle_names is None else muscle_names)
-        if self.muscle_names and len(self.muscle_names) != data.activation_map.shape[2]:
+        if muscle_names is None:
+            muscle_names = data.muscle_names if data is not None else ()
+        self.muscle_names = tuple(muscle_names)
+        if data is not None and self.muscle_names and len(self.muscle_names) != data.activation_map.shape[2]:
             raise ValueError("muscle_names must match the map's muscle axis.")
         self._renderer = None
         self._reference_model = None
@@ -199,23 +215,75 @@ class Visualizer:
 
     @classmethod
     def from_npz(cls, npz_path: Union[Path, str], **kwargs):
-        return cls(MapData.from_npz(npz_path), **kwargs)
+        return cls(data=MapData.from_npz(npz_path), **kwargs)
+
+    def _get_model(self):
+        if self.model is None:
+            if self.model_path is None:
+                raise ValueError("Provide a model or model_path for this operation.")
+            import opensim as osim
+            self.model = osim.Model(str(self.model_path))
+        return self.model
+
+    def save_motion_sto(self, path, time, states):
+        """Export unlocked coordinate values and speeds to an OpenSim .sto file.
+
+        states has shape (2 * n_unlocked_coordinates, n_times), with rows
+        [q1, speed1, q2, speed2, ...] in the model's CoordinateSet order.
+        Rotations are in radians. Labels come from each coordinate's full model
+        path; locked coordinates remain at the defaults in the supplied model.
+        Export does not initialize a simulation or open a visualizer window.
+        """
+        model = self._get_model()
+        model.finalizeConnections()
+        state_labels = [
+            f"{coordinate.getAbsolutePathString()}/{kind}"
+            for coordinate in model.getCoordinateSet()
+            if not coordinate.get_locked()
+            for kind in ("value", "speed")
+        ]
+        time = np.asarray(time, dtype=float)
+        states = np.asarray(states, dtype=float)
+        if time.ndim != 1 or time.size == 0 or not np.isfinite(time).all():
+            raise ValueError("time must be a non-empty, finite 1D array.")
+        if np.any(np.diff(time) <= 0):
+            raise ValueError("time must be strictly increasing.")
+        expected_shape = (len(state_labels), len(time))
+        if states.shape != expected_shape:
+            raise ValueError(
+                f"states must have shape {expected_shape} with alternating "
+                "coordinate value/speed rows for the model's unlocked coordinates; "
+                f"got {states.shape}."
+            )
+        if not np.isfinite(states).all():
+            raise ValueError("states must contain only finite values.")
+
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as file:
+            file.write("motion\n")
+            file.write("version=1\n")
+            file.write(f"nRows={len(time)}\n")
+            file.write(f"nColumns={len(state_labels) + 1}\n")
+            file.write("inDegrees=no\n")
+            file.write("endheader\n")
+            file.write("time\t" + "\t".join(state_labels) + "\n")
+            for k, sample_time in enumerate(time):
+                row = np.concatenate(([sample_time], states[:, k]))
+                file.write("\t".join(f"{value:.12g}" for value in row) + "\n")
+        return path
 
     def _simbody(self):
-        if self.model_path is None:
-            raise ValueError("Provide model_path to use Simbody or model markers.")
         if self._renderer is None:
-            self._renderer = SimbodyRenderer(self.model_path, self.endpoint_marker)
+            self._renderer = SimbodyRenderer(self._get_model(), self.endpoint_marker)
         return self._renderer
 
     def _marker_position(self, name):
         if self._renderer is not None:
             return self._renderer.marker_position(name)
-        if self.model_path is None:
-            raise ValueError("A reference marker requires model_path.")
         if self._reference_model is None:
             import opensim as osim
-            self._reference_model = osim.Model(str(self.model_path))
+            self._reference_model = osim.Model(self._get_model())
             self._reference_model.setUseVisualizer(False)
             self._reference_state = self._reference_model.initSystem()
             self._reference_model.realizePosition(self._reference_state)
@@ -251,6 +319,8 @@ class Visualizer:
         max_points optionally subsamples only the displayed points.
         force_scale is metres/Newton; force_origin is a ground-frame point.
         """
+        if self.data is None:
+            raise ValueError("Map display requires data; pass MapData or use Visualizer.from_npz().")
         if backend not in ("matplotlib", "simbody"):
             raise ValueError("backend must be 'matplotlib' or 'simbody'.")
         if field != "workspace" and field not in self._FIELDS:
