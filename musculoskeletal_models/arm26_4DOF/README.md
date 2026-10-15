@@ -1,14 +1,22 @@
-The original `arm26.osim` model used for its simplicity has been adapted with the following features for compatibility with the RMR solver:
+# arm26 4-DOF model
 
-- Six `Millard2012EquilibriumMuscle` muscles.
-- Four free coordinates: shoulder elevation, shoulder plane, shoulder axial rotation, and elbow flexion.
-- The shoulder axial-rotation coordinate is named `r_shoulder_rot`, rotates about the shoulder frame's second (`Y`) axis, and has a range of `[-pi, pi]` radians.
-- A fixed base offset of 0.8 m upward.
-- Reserve actuators for shoulder elevation, plane motion, and axial rotation to compensate for omitted shoulder muscles.
-- An `endpoint_external_force` prescribed force at the wrist, with ground-frame force components and zero applied torque. Its application point uses wrist-marker coordinates relative to the forearm body's elbow origin.
-- Because the axial-rotation reserve actuator is part of the model's ForceSet, `endpoint_external_force` is ForceSet index `9` in this four-DOF version. Code that uses `RMRsolver` directly should select that index; `fatigue_maps.py` discovers it by name.
-- Disabled hand and finger meshes for simpler visualization; forearm geometry is retained.
+`arm26_4DOF.osim` extends the reduced arm26 model for shoulder axial rotation
+and RMR optimization:
 
-The RMR solver discovers all unlocked coordinates automatically. The axial-rotation reserve actuator is included so the acceleration constraint remains actuated even though this reduced model does not include dedicated shoulder muscles for that DOF. No RMR solver source changes are required for the extra coordinate.
+- Six `Millard2012EquilibriumMuscle` muscles and four free coordinates:
+  `r_shoulder_elev`, `r_shoulder_plane`, `r_shoulder_rot`, and `r_elbow_flex`.
+- The axial-rotation coordinate is `r_shoulder_rot`; it rotates about the
+  shoulder frame's Y axis and has range `[-π, π]` radians.
+- A fixed `0.8 m` upward base offset and reserve actuators for all three
+  shoulder coordinates. The axial-rotation reserve actuator keeps the
+  acceleration constraint actuated without dedicated muscles for that DOF.
+- Added `endpoint_external_force` at the wrist, with ground-frame force
+  components and zero applied torque. Its application point uses wrist-marker
+  coordinates relative to the forearm body's elbow origin. It is ForceSet
+  index `9` in this model; code should select it by name where possible.
+- Added the `endpoint` marker on `/bodyset/r_ulna_radius_hand` at local
+  `(0, -0.23559, 0) m`.
+- Hand and finger meshes are disabled; forearm geometry remains visible.
 
-Inverse dynamics are generated using the [antoinefalisse/opensimAD repository](https://github.com/antoinefalisse/opensimAD), while forward dynamics are generated using the custom [itbellix/opensimAD repository](https://github.com/itbellix/opensimAD).
+Inverse dynamics use [antoinefalisse/opensimAD](https://github.com/antoinefalisse/opensimAD).
+Forward dynamics use [itbellix/opensimAD](https://github.com/itbellix/opensimAD).

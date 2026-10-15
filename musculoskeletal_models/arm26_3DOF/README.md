@@ -1,10 +1,18 @@
-The original `arm26.osim` model used for its simplicity has been adapted with the following features for compatibility with the RMR solver:
+# arm26 3-DOF model
 
-- Six `Millard2012EquilibriumMuscle` muscles.
-- Three free coordinates: shoulder elevation, shoulder plane, and elbow flexion.
-- A fixed base offset of 0.8 m upward.
-- Reserve actuators for shoulder elevation and plane motion to compensate for omitted shoulder muscles.
-- An `endpoint_external_force` prescribed force at the wrist, with ground-frame force components and zero applied torque. Its application point uses wrist-marker coordinates relative to the forearm body's elbow origin.
-- Disabled hand and finger meshes for simpler visualization; forearm geometry is retained.
+`arm26_3DOF.osim` is a reduced arm26 model configured for the RMR solver:
 
-Inverse dynamics are generated using the [antoinefalisse/opensimAD repository](https://github.com/antoinefalisse/opensimAD), while forward dynamics are generated using the custom [itbellix/opensimAD repository](https://github.com/itbellix/opensimAD).
+- Six `Millard2012EquilibriumMuscle` muscles and three free coordinates:
+  `r_shoulder_elev`, `r_shoulder_plane`, and `r_elbow_flex` (shoulder elevation,
+  shoulder plane, and elbow flexion).
+- A fixed `0.8 m` upward base offset and reserve actuators for shoulder
+  elevation and plane motion.
+- Added `endpoint_external_force` at the wrist. Its force is expressed in the
+  ground frame, applied torque is zero, and its application point uses
+  wrist-marker coordinates relative to the forearm body's elbow origin.
+- Added the `endpoint` marker on `/bodyset/r_ulna_radius_hand` at local
+  `(0, -0.23559, 0) m`.
+- Hand and finger meshes are disabled; forearm geometry remains visible.
+
+Inverse dynamics use [antoinefalisse/opensimAD](https://github.com/antoinefalisse/opensimAD).
+Forward dynamics use [itbellix/opensimAD](https://github.com/itbellix/opensimAD).
