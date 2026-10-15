@@ -103,10 +103,10 @@ class OCPResult:
 
 
 class MusculoskeletalOCP:
-    def __init__(self, kinematics, dynamics, fatigue_map, reference, joint_states, muscle_states, x, u, conf, N=None, x_init=None):
+    def __init__(self, kinematics, dynamics, sample_fatigue_rates, reference, joint_states, muscle_states, x, u, conf, N=None, x_init=None):
         self.kinematics = kinematics
         self.dynamics = dynamics
-        self.fatigue_map = fatigue_map
+        self.sample_fatigue_rates = sample_fatigue_rates
         self.reference = reference
         self.conf = conf
 
@@ -127,7 +127,7 @@ class MusculoskeletalOCP:
         cls, 
         model, 
         dynamics_func: Path,  
-        fatigue_map, 
+        sample_fatigue_rates,
         reference,
         horizon,
         timestep,
@@ -150,7 +150,7 @@ class MusculoskeletalOCP:
             x_init = np.concatenate((joint_state, muscle_state))
             print(f"Initial state not provided. Using default: {x_init}")
 
-        return cls(kinematics, dynamics, fatigue_map, reference, joint_states, muscle_states, x, u, conf, x_init=x_init)
+        return cls(kinematics, dynamics, sample_fatigue_rates, reference, joint_states, muscle_states, x, u, conf, x_init=x_init)
 
     def solve(self):
         endpoint_FK = self.kinematics.endpoint_function
@@ -217,8 +217,11 @@ class MusculoskeletalOCP:
 if __name__ == "__main__":
     root = Path(__file__).parent.parent
 
-    model_dir = root / "musculoskeletal_models" / "arm26_4DOF"
-    model = osim.Model(str(model_dir / "arm26_4DOF.osim"))
+    model_name = "arm26_3DOF"
+    model_dir = root / "musculoskeletal_models" / f"{model_name}"
+    results_dir = root / "results" / f"{model_name}"
+    archive_name = "p1e5_m1_d1_fx-20_fy0_fz0.npz"
+    model = osim.Model(str(model_dir / f"{model_name}.osim"))
 
     horizon = 100
     timestep = 0.1
@@ -230,10 +233,13 @@ if __name__ == "__main__":
         0.2 + 0.1 * np.sin(2 * np.pi * time / 2.0),
     ))
 
+    archive = np.load( results_dir / archive_name )
+    sample_fatigue_rates = archive["sample_fatigue_rates"]
+
     ocp = MusculoskeletalOCP.from_model(
         model=model,
         dynamics_func=model_dir / "fd_dynamics" / "F.casadi",
-        fatigue_map=None,
+        sample_fatigue_rates=sample_fatigue_rates,
         reference=reference,
         horizon=100,
         timestep=0.1,

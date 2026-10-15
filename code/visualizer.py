@@ -11,58 +11,58 @@ os.environ.setdefault("SIMBODY_HOME", str(Path(sys.prefix) / "simbody"))
 
 
 @dataclass
-class MapData:
-    joint_coordinates: np.ndarray                           # (n_positions, n_coordinates)
-    cartesian_coordinates: np.ndarray                       # (n_positions, 3), ground XYZ, m
-    force_magnitudes: np.ndarray                            # (n_magnitudes,), N
-    force_directions: np.ndarray                            # (n_directions, 3)
-    forces: np.ndarray                                      # (n_forces, 3), ground XYZ, N
-    activation_map: np.ndarray                              # (n_positions, n_forces, n_muscles)
-    muscle_force_map: np.ndarray                            # same shape, N
-    success: np.ndarray                                     # (n_positions, n_forces), bool
-    fatigue_map: Optional[np.ndarray] = None                # same shape as activation, s^-1
-    fatigue_dominance_map: Optional[np.ndarray] = None      # (n_positions, n_forces)
-    muscle_names: tuple = ()                                # Optional, in map-column order
+class SampleData:
+    joint_coordinate_samples: np.ndarray                   # (n_positions, n_coordinates)
+    cartesian_coordinate_samples: np.ndarray               # (n_positions, 3), ground XYZ, m
+    force_magnitude_samples: np.ndarray                    # (n_magnitudes,), N
+    force_direction_samples: np.ndarray                    # (n_directions, 3)
+    force_samples: np.ndarray                              # (n_forces, 3), ground XYZ, N
+    sample_activations: np.ndarray                         # (n_positions, n_forces, n_muscles)
+    sample_muscle_forces: np.ndarray                       # same shape, N
+    sample_success: np.ndarray                             # (n_positions, n_forces), bool
+    sample_fatigue_rates: Optional[np.ndarray] = None      # same shape as activations, s^-1
+    sample_fatigue_dominance: Optional[np.ndarray] = None  # (n_positions, n_forces)
+    muscle_names: tuple = ()                                # Optional, in sample-value column order
     coordinate_names: tuple = ()                             # Optional, in joint-coordinate order
 
     def __post_init__(self):
-        if self.joint_coordinates.ndim != 2:
-            raise ValueError("joint_coordinates must be a 2D array.")
-        n_positions = len(self.joint_coordinates)
-        if self.forces.ndim != 2 or self.forces.shape[1] != 3:
-            raise ValueError("forces must have shape (n_forces, 3).")
-        n_forces = len(self.forces)
-        if self.activation_map.ndim != 3:
-            raise ValueError("activation_map must be a 3D array.")
-        shape = (n_positions, n_forces, self.activation_map.shape[2])
+        if self.joint_coordinate_samples.ndim != 2:
+            raise ValueError("joint_coordinate_samples must be a 2D array.")
+        n_positions = len(self.joint_coordinate_samples)
+        if self.force_samples.ndim != 2 or self.force_samples.shape[1] != 3:
+            raise ValueError("force_samples must have shape (n_forces, 3).")
+        n_forces = len(self.force_samples)
+        if self.sample_activations.ndim != 3:
+            raise ValueError("sample_activations must be a 3D array.")
+        shape = (n_positions, n_forces, self.sample_activations.shape[2])
         expected = {
-            "cartesian_coordinates": (n_positions, 3),
-            "activation_map": shape, "muscle_force_map": shape,
-            "success": shape[:2], "fatigue_map": shape,
-            "fatigue_dominance_map": shape[:2],
+            "cartesian_coordinate_samples": (n_positions, 3),
+            "sample_activations": shape, "sample_muscle_forces": shape,
+            "sample_success": shape[:2], "sample_fatigue_rates": shape,
+            "sample_fatigue_dominance": shape[:2],
         }
         for name, target in expected.items():
             array = getattr(self, name)
             if array is not None and array.shape != target:
                 raise ValueError(f"{name}: expected {target}, got {array.shape}.")
-        if self.success.dtype != np.bool_:
-            raise ValueError("success must be a boolean array.")
-        if self.force_magnitudes.ndim != 1:
-            raise ValueError("force_magnitudes must be a 1D array.")
-        if self.force_directions.ndim != 2 or self.force_directions.shape[1] != 3:
-            raise ValueError("force_directions must have shape (n_directions, 3).")
-        if len(self.force_magnitudes) * len(self.force_directions) != n_forces:
+        if self.sample_success.dtype != np.bool_:
+            raise ValueError("sample_success must be a boolean array.")
+        if self.force_magnitude_samples.ndim != 1:
+            raise ValueError("force_magnitude_samples must be a 1D array.")
+        if self.force_direction_samples.ndim != 2 or self.force_direction_samples.shape[1] != 3:
+            raise ValueError("force_direction_samples must have shape (n_directions, 3).")
+        if len(self.force_magnitude_samples) * len(self.force_direction_samples) != n_forces:
             raise ValueError("Force count does not match magnitude/direction combinations.")
         self.muscle_names = tuple(self.muscle_names)
         if self.muscle_names and len(self.muscle_names) != shape[2]:
             raise ValueError("muscle_names must match the number of muscle columns.")
         self.coordinate_names = tuple(self.coordinate_names)
-        if self.coordinate_names and len(self.coordinate_names) != self.joint_coordinates.shape[1]:
+        if self.coordinate_names and len(self.coordinate_names) != self.joint_coordinate_samples.shape[1]:
             raise ValueError("coordinate_names must match the joint-coordinate axis.")
 
     @classmethod
     def from_npz(cls, npz_path: Union[Path, str]):
-        optional = {"fatigue_map", "fatigue_dominance_map", "muscle_names", "coordinate_names"}
+        optional = {"sample_fatigue_rates", "sample_fatigue_dominance", "muscle_names", "coordinate_names"}
         values = {}
         with np.load(Path(npz_path), allow_pickle=False) as data:
             for field in fields(cls):
@@ -179,20 +179,20 @@ class SimbodyRenderer:
 
 class Visualizer:
     _FIELDS = {
-        "activation": ("activation_map", "Activation", "RdYlGn_r", (0, 1)),
-        "muscle_force": ("muscle_force_map", "Muscle force [N]", "viridis", None),
-        "fatigue": ("fatigue_map", "Fatigue coefficient [s^-1]", "viridis", None),
-        "dominance": ("fatigue_dominance_map", "Fatigue dominance", "coolwarm", (-1, 1)),
+        "activation": ("sample_activations", "Activation", "RdYlGn_r", (0, 1)),
+        "muscle_force": ("sample_muscle_forces", "Muscle force [N]", "viridis", None),
+        "fatigue": ("sample_fatigue_rates", "Fatigue rate [s^-1]", "viridis", None),
+        "dominance": ("sample_fatigue_dominance", "Fatigue dominance", "coolwarm", (-1, 1)),
     }
 
-    def __init__(self, model=None, *, data: Optional[MapData] = None,
+    def __init__(self, model=None, *, data: Optional[SampleData] = None,
                  model_path=None, muscle_names=None,
                  endpoint_marker="endpoint"):
-        """Use an OpenSim model for motion export and optional MapData for plots."""
+        """Use an OpenSim model for motion export and optional sample data for plots."""
         # Preserve the existing Visualizer(data, model_path=...) calling form.
-        if isinstance(model, MapData):
+        if isinstance(model, SampleData):
             if data is not None:
-                raise ValueError("Map data was supplied twice.")
+                raise ValueError("Sample data was supplied twice.")
             data, model = model, None
         if isinstance(model, (str, Path)):
             if model_path is not None:
@@ -211,15 +211,15 @@ class Visualizer:
         if muscle_names is None:
             muscle_names = data.muscle_names if data is not None else ()
         self.muscle_names = tuple(muscle_names)
-        if data is not None and self.muscle_names and len(self.muscle_names) != data.activation_map.shape[2]:
-            raise ValueError("muscle_names must match the map's muscle axis.")
+        if data is not None and self.muscle_names and len(self.muscle_names) != data.sample_activations.shape[2]:
+            raise ValueError("muscle_names must match the sample values' muscle axis.")
         self._renderer = None
         self._reference_model = None
         self._reference_state = None
 
     @classmethod
     def from_npz(cls, npz_path: Union[Path, str], **kwargs):
-        return cls(data=MapData.from_npz(npz_path), **kwargs)
+        return cls(data=SampleData.from_npz(npz_path), **kwargs)
 
     def _get_model(self):
         if self.model is None:
@@ -304,7 +304,7 @@ class Visualizer:
             return self.muscle_names.index(muscle)
         if not isinstance(muscle, (int, np.integer)):
             raise ValueError("Specify muscle as a name or integer index.")
-        if not 0 <= muscle < self.data.activation_map.shape[2]:
+        if not 0 <= muscle < self.data.sample_activations.shape[2]:
             raise IndexError("Muscle index is out of range.")
         return int(muscle)
 
@@ -315,7 +315,7 @@ class Visualizer:
              value_range=None, cmap=None, max_points=None, radius=0.003,
              opacity=0.8, point_size=8, show_force=True, force_scale=0.01,
              force_origin=None, block=True):
-        """Display a map in Cartesian or joint space; return (fig, ax) or point count.
+        """Display sampled values in Cartesian or joint space; return (fig, ax) or point count.
 
         slice_axis: 'x', 'y' or 'z'. slice_value: absolute ground coordinate,
         or an offset from reference_marker in the model's default pose (metres).
@@ -323,12 +323,12 @@ class Visualizer:
         (default: the first two), and slice_coordinate selects an optional
         coordinate by index or name. Matplotlib projects slices onto the
         remaining plotted axes; Simbody retains 3D Cartesian positions.
-        value_range fixes the colour scale, useful for comparing maps.
+        value_range fixes the colour scale, useful for comparing sample evaluations.
         max_points optionally subsamples only the displayed points.
         force_scale is metres/Newton; force_origin is a ground-frame point.
         """
         if self.data is None:
-            raise ValueError("Map display requires data; pass MapData or use Visualizer.from_npz().")
+            raise ValueError("Sample display requires data; pass SampleData or use Visualizer.from_npz().")
         if backend not in ("matplotlib", "simbody"):
             raise ValueError("backend must be 'matplotlib' or 'simbody'.")
         if space not in ("cartesian", "joint"):
@@ -337,7 +337,7 @@ class Visualizer:
             raise ValueError("The Simbody backend displays Cartesian positions only.")
         if field != "workspace" and field not in self._FIELDS:
             raise ValueError(f"Unknown field {field!r}; use {tuple(self._FIELDS)} or 'workspace'.")
-        if not isinstance(force_index, (int, np.integer)) or not 0 <= force_index < len(self.data.forces):
+        if not isinstance(force_index, (int, np.integer)) or not 0 <= force_index < len(self.data.force_samples):
             raise IndexError("force_index is outside the saved force samples.")
         if space == "cartesian" and (slice_axis is None) != (slice_value is None):
             raise ValueError("Provide slice_axis and slice_value together.")
@@ -359,13 +359,13 @@ class Visualizer:
             raise ValueError("max_points must be a positive integer.")
 
         if space == "cartesian":
-            points = self.data.cartesian_coordinates
+            points = self.data.cartesian_coordinate_samples
             axis_names = ("X", "Y", "Z")
             plot_axes = [0, 1, 2]
             slice_index = None if slice_axis is None else "xyz".index(slice_axis)
             title = "Workspace"
         else:
-            points = self.data.joint_coordinates
+            points = self.data.joint_coordinate_samples
             n_coordinates = points.shape[1]
             names = self.data.coordinate_names or tuple(f"q{i}" for i in range(n_coordinates))
             if coordinate_axes is None:
@@ -402,7 +402,7 @@ class Visualizer:
             title = "Joint space"
         mask = np.isfinite(points).all(axis=1)
         if filter_success:
-            mask &= self.data.success[:, force_index]
+            mask &= self.data.sample_success[:, force_index]
         values, norm, colormap = None, None, None
         if field != "workspace":
             attribute, label, default_cmap, default_range = self._FIELDS[field]
@@ -412,7 +412,7 @@ class Visualizer:
             title = label
             if field == "dominance":
                 if muscle is not None:
-                    raise ValueError("Dominance is a group-level map; omit muscle.")
+                    raise ValueError("Dominance is a group-level sample value; omit muscle.")
                 values = array[:, force_index]
             else:
                 index = self._muscle_index(muscle)
@@ -424,7 +424,7 @@ class Visualizer:
                 raise ValueError("No finite samples satisfy the validity filter.")
             limits = value_range if value_range is not None else default_range
             if limits is None:
-                # Full valid map, before slicing/subsampling, in physical units.
+                # Full valid sample range, before slicing/subsampling, in physical units.
                 limits = (0.0, max(float(values[mask].max()), 1e-12))
             limits = np.asarray(limits, dtype=float)
             if limits.shape != (2,) or not np.isfinite(limits).all() or limits[0] >= limits[1]:
@@ -453,7 +453,7 @@ class Visualizer:
         if max_points is not None and len(indices) > max_points:
             indices = np.random.default_rng(0).choice(indices, size=max_points, replace=False)
         selected_points = points[indices]
-        force = self.data.forces[force_index]
+        force = self.data.force_samples[force_index]
         title += f" | F[{force_index}]={np.array2string(force, precision=2)} N"
         if show_force and space == "cartesian" and not np.isfinite(force).all():
             raise ValueError("Cannot draw a non-finite force vector.")

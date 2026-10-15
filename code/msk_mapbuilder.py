@@ -151,20 +151,20 @@ class Samples:
 
 @dataclass
 class Results:
-    activation_map: np.ndarray                  # (n_samples, n_forces, n_muscles)
-    muscle_force_map: np.ndarray                # (n_samples, n_forces, n_muscles)
-    success: np.ndarray                         # (n_samples, n_forces)
-    fatigue_map: np.ndarray                     # (n_samples, n_forces, n_muscles)
-    fatigue_dominance_map: np.ndarray           # (n_samples, n_forces, n_muscles)
+    sample_activations: np.ndarray                  # (n_samples, n_forces, n_muscles)
+    sample_muscle_forces: np.ndarray                # (n_samples, n_forces, n_muscles)
+    sample_success: np.ndarray                      # (n_samples, n_forces)
+    sample_fatigue_rates: np.ndarray                # (n_samples, n_forces, n_muscles)
+    sample_fatigue_dominance: np.ndarray            # (n_samples, n_forces)
 
     @classmethod
     def empty(cls):
         return cls(
-            activation_map=np.empty((0, 0, 0)),
-            muscle_force_map=np.empty((0, 0, 0)),
-            success=np.empty((0, 0), dtype=bool),
-            fatigue_map=np.empty((0, 0, 0)),
-            fatigue_dominance_map=np.empty((0, 0, 0))
+            sample_activations=np.empty((0, 0, 0)),
+            sample_muscle_forces=np.empty((0, 0, 0)),
+            sample_success=np.empty((0, 0), dtype=bool),
+            sample_fatigue_rates=np.empty((0, 0, 0)),
+            sample_fatigue_dominance=np.empty((0, 0, 0))
         )
 
 
@@ -220,7 +220,7 @@ class RMRWorkerContext:
             info["success"],
         )
 
-class MusculoskeletalMapBuilder:
+class MusculoskeletalSampleBuilder:
     def __init__(self, model, info: ModelInfo, *, model_path=None):
         self.model = model
         self.info = info
@@ -241,19 +241,19 @@ class MusculoskeletalMapBuilder:
 
         with np.load(npz_path) as data:
             builder.samples = Samples(
-                joint_coordinates=data["joint_coordinates"],
-                cartesian_coordinates=data["cartesian_coordinates"],
-                force_magnitudes=data["force_magnitudes"],
-                force_directions=data["force_directions"],
-                forces=data["forces"]
+                joint_coordinates=data["joint_coordinate_samples"],
+                cartesian_coordinates=data["cartesian_coordinate_samples"],
+                force_magnitudes=data["force_magnitude_samples"],
+                force_directions=data["force_direction_samples"],
+                forces=data["force_samples"]
             )
 
             builder.results = Results(
-                activation_map=data["activation_map"],
-                muscle_force_map=data["muscle_force_map"],
-                success=data["success"],
-                fatigue_map=data.get("fatigue_map"),
-                fatigue_dominance_map=data.get("fatigue_dominance_map")
+                sample_activations=data["sample_activations"],
+                sample_muscle_forces=data["sample_muscle_forces"],
+                sample_success=data["sample_success"],
+                sample_fatigue_rates=data.get("sample_fatigue_rates"),
+                sample_fatigue_dominance=data.get("sample_fatigue_dominance")
             )
 
         return builder
@@ -343,7 +343,7 @@ class MusculoskeletalMapBuilder:
             self.samples.force_directions = directions
             self.samples.forces = (magnitudes[:, None, None] * directions[None, :, :]).reshape(-1, 3)
             
-    def compute_activation_and_muscle_force_maps(self, *, workers=4, activation_dynamics=False):
+    def evaluate_sample_activations_and_muscle_forces(self, *, workers=4, activation_dynamics=False):
         n_positions = len(self.samples.joint_coordinates)
         n_forces = len(self.samples.forces)
         n_muscles = len(self.info.muscle_names)
@@ -384,42 +384,42 @@ class MusculoskeletalMapBuilder:
                     if next_task is not None:
                         pending.add(pool.submit(_solve_task, next_task))
 
-        self.results.activation_map = activations
-        self.results.muscle_force_map = muscle_forces
-        self.results.success = success
+        self.results.sample_activations = activations
+        self.results.sample_muscle_forces = muscle_forces
+        self.results.sample_success = success
 
         return self.results
 
-    def compute_fatigue_map(self, *, T=10.0, F=None):
+    def compute_sample_fatigue_rates(self, *, T=10.0, F=None):
         if F is None:
             F = self.info.muscle_max_forces
 
         # based on formula from https://doi.org/10.1016/j.rcim.2019.01.013
         C = - ( T * F ) / np.log(1 - 0.993)
 
-        fatigue_map = self.results.muscle_force_map / C[None, None, :]
-        self.results.fatigue_map = fatigue_map
-        return fatigue_map
+        sample_fatigue_rates = self.results.sample_muscle_forces / C[None, None, :]
+        self.results.sample_fatigue_rates = sample_fatigue_rates
+        return sample_fatigue_rates
 
-    def compute_fatigue_dominance_map(self, agonists, antagonists):
+    def compute_sample_fatigue_dominance(self, agonists, antagonists):
         agonist_indices = [self.info.muscle_names.index(name) for name in agonists]
         antagonist_indices = [self.info.muscle_names.index(name) for name in antagonists]
 
-        agonist_fatigue = self.results.fatigue_map[:, :, agonist_indices].sum(axis=2)
-        antagonist_fatigue = self.results.fatigue_map[:, :, antagonist_indices].sum(axis=2)
+        agonist_fatigue = self.results.sample_fatigue_rates[:, :, agonist_indices].sum(axis=2)
+        antagonist_fatigue = self.results.sample_fatigue_rates[:, :, antagonist_indices].sum(axis=2)
 
         numerator = agonist_fatigue - antagonist_fatigue
         denominator = agonist_fatigue + antagonist_fatigue
 
-        fatigue_dominance_map = np.divide(
+        sample_fatigue_dominance = np.divide(
             numerator,
             denominator,
             out=np.zeros_like(numerator),
             where=denominator != 0
         )
 
-        self.results.fatigue_dominance_map = fatigue_dominance_map
-        return fatigue_dominance_map
+        self.results.sample_fatigue_dominance = sample_fatigue_dominance
+        return sample_fatigue_dominance
 
     def save_results(self, *, results_dir=None, tag=None):
         if results_dir is None:
@@ -440,16 +440,16 @@ class MusculoskeletalMapBuilder:
 
         np.savez_compressed(
             results_dir / filename,
-            joint_coordinates=self.samples.joint_coordinates,
-            cartesian_coordinates=self.samples.cartesian_coordinates,
-            force_magnitudes=self.samples.force_magnitudes,
-            force_directions=self.samples.force_directions,
-            forces=self.samples.forces,
-            activation_map=self.results.activation_map,
-            muscle_force_map=self.results.muscle_force_map,
-            success=self.results.success,
-            fatigue_map=self.results.fatigue_map,
-            fatigue_dominance_map=self.results.fatigue_dominance_map,
+            joint_coordinate_samples=self.samples.joint_coordinates,
+            cartesian_coordinate_samples=self.samples.cartesian_coordinates,
+            force_magnitude_samples=self.samples.force_magnitudes,
+            force_direction_samples=self.samples.force_directions,
+            force_samples=self.samples.forces,
+            sample_activations=self.results.sample_activations,
+            sample_muscle_forces=self.results.sample_muscle_forces,
+            sample_success=self.results.sample_success,
+            sample_fatigue_rates=self.results.sample_fatigue_rates,
+            sample_fatigue_dominance=self.results.sample_fatigue_dominance,
             coordinate_names=np.asarray(self.info.joint_coordinate_names),
             muscle_names=np.asarray(self.info.muscle_names),
         )
@@ -466,22 +466,22 @@ if __name__ == "__main__":
     from opensim import Model
 
     ROOT = Path(__file__).parent.parent
-    #model_path = ROOT / "musculoskeletal_models" / "arm26_3DOF" / "arm26_3DOF.osim"
+    model_path = ROOT / "musculoskeletal_models" / "arm26_3DOF" / "arm26_3DOF.osim"
     #npz_path = ROOT / "results" / "ts_model_4DOF" / "p1e3_m1_d1.npz"
-    #agonists = ["TRImed", "TRIlat", "TRIlong"]
-    #antagonists = ["BICshort", "BIClong", "BRA"]
+    agonists = ["TRImed", "TRIlat", "TRIlong"]
+    antagonists = ["BICshort", "BIClong", "BRA"]
 
-    model_path = ROOT / "musculoskeletal_models" / "tsm_4DOF" / "tsm_4DOF.osim"
-    agonists = ["BIC_long", "BIC_brevis"]
-    antagonists = ["TRIlong"]
+    #model_path = ROOT / "musculoskeletal_models" / "tsm_4DOF" / "tsm_4DOF.osim"
+    #agonists = ["BIC_long", "BIC_brevis"]
+    #antagonists = ["TRIlong"]
 
     model = Model(str(model_path))
 
-    #mm_builder = MusculoskeletalMapBuilder.from_npz(model, npz_path, model_path=model_path)
+    #mm_builder = MusculoskeletalSampleBuilder.from_npz(model, npz_path, model_path=model_path)
 
-    mm_builder = MusculoskeletalMapBuilder.from_model(model, model_path=model_path)
+    mm_builder = MusculoskeletalSampleBuilder.from_model(model, model_path=model_path)
 
-    mm_builder.generate_position_samples(n_samples=10000)
+    mm_builder.generate_position_samples(n_samples=100000)
 
     one_direction = np.array([[-1.0, 0.0, 0.0]])
     one_magnitude = np.array([20.0])
@@ -496,14 +496,14 @@ if __name__ == "__main__":
         #n_directions=n_directions,
     )
 
-    mm_builder.compute_activation_and_muscle_force_maps(
+    mm_builder.evaluate_sample_activations_and_muscle_forces(
         workers=12,
         activation_dynamics=False
     )
 
-    mm_builder.compute_fatigue_map()
+    mm_builder.compute_sample_fatigue_rates()
 
-    mm_builder.compute_fatigue_dominance_map(agonists, antagonists)
+    mm_builder.compute_sample_fatigue_dominance(agonists, antagonists)
 
     mm_builder.save_results()
 
