@@ -23,6 +23,7 @@ class MapData:
     fatigue_map: Optional[np.ndarray] = None                # same shape as activation, s^-1
     fatigue_dominance_map: Optional[np.ndarray] = None      # (n_positions, n_forces)
     muscle_names: tuple = ()                                # Optional, in map-column order
+    coordinate_names: tuple = ()                             # Optional, in joint-coordinate order
 
     def __post_init__(self):
         if self.joint_coordinates.ndim != 2:
@@ -55,10 +56,13 @@ class MapData:
         self.muscle_names = tuple(self.muscle_names)
         if self.muscle_names and len(self.muscle_names) != shape[2]:
             raise ValueError("muscle_names must match the number of muscle columns.")
+        self.coordinate_names = tuple(self.coordinate_names)
+        if self.coordinate_names and len(self.coordinate_names) != self.joint_coordinates.shape[1]:
+            raise ValueError("coordinate_names must match the joint-coordinate axis.")
 
     @classmethod
     def from_npz(cls, npz_path: Union[Path, str]):
-        optional = {"fatigue_map", "fatigue_dominance_map", "muscle_names"}
+        optional = {"fatigue_map", "fatigue_dominance_map", "muscle_names", "coordinate_names"}
         values = {}
         with np.load(Path(npz_path), allow_pickle=False) as data:
             for field in fields(cls):
@@ -304,17 +308,21 @@ class Visualizer:
             raise IndexError("Muscle index is out of range.")
         return int(muscle)
 
-    def show(self, field="activation", *, muscle=None, force_index=0,
+    def show(self, field="activation", *, muscle=None, force_index=0, space="cartesian",
              backend="matplotlib", slice_axis=None, slice_value=None,
+             coordinate_axes=None, slice_coordinate=None,
              tolerance=0.01, reference_marker=None, filter_success=True,
              value_range=None, cmap=None, max_points=None, radius=0.003,
              opacity=0.8, point_size=8, show_force=True, force_scale=0.01,
              force_origin=None, block=True):
-        """Display a full cloud or a slice; return (fig, ax) or Simbody point count.
+        """Display a map in Cartesian or joint space; return (fig, ax) or point count.
 
         slice_axis: 'x', 'y' or 'z'. slice_value: absolute ground coordinate,
         or an offset from reference_marker in the model's default pose (metres).
-        Matplotlib projects slices onto the other two axes; Simbody retains 3D.
+        In joint space, coordinate_axes selects two or three coordinate indices
+        (default: the first two), and slice_coordinate selects an optional
+        coordinate by index or name. Matplotlib projects slices onto the
+        remaining plotted axes; Simbody retains 3D Cartesian positions.
         value_range fixes the colour scale, useful for comparing maps.
         max_points optionally subsamples only the displayed points.
         force_scale is metres/Newton; force_origin is a ground-frame point.
@@ -323,12 +331,22 @@ class Visualizer:
             raise ValueError("Map display requires data; pass MapData or use Visualizer.from_npz().")
         if backend not in ("matplotlib", "simbody"):
             raise ValueError("backend must be 'matplotlib' or 'simbody'.")
+        if space not in ("cartesian", "joint"):
+            raise ValueError("space must be 'cartesian' or 'joint'.")
+        if backend == "simbody" and space != "cartesian":
+            raise ValueError("The Simbody backend displays Cartesian positions only.")
         if field != "workspace" and field not in self._FIELDS:
             raise ValueError(f"Unknown field {field!r}; use {tuple(self._FIELDS)} or 'workspace'.")
         if not isinstance(force_index, (int, np.integer)) or not 0 <= force_index < len(self.data.forces):
             raise IndexError("force_index is outside the saved force samples.")
-        if (slice_axis is None) != (slice_value is None):
+        if space == "cartesian" and (slice_axis is None) != (slice_value is None):
             raise ValueError("Provide slice_axis and slice_value together.")
+        if space == "joint" and (slice_coordinate is None) != (slice_value is None):
+            raise ValueError("Provide slice_coordinate and slice_value together.")
+        if space == "cartesian" and (coordinate_axes is not None or slice_coordinate is not None):
+            raise ValueError("coordinate_axes and slice_coordinate apply only in joint space.")
+        if space == "joint" and slice_axis is not None:
+            raise ValueError("Use slice_coordinate for a joint-space slice.")
         if slice_axis is not None and slice_axis not in ("x", "y", "z"):
             raise ValueError("slice_axis must be 'x', 'y' or 'z'.")
         if not np.isfinite(tolerance) or tolerance < 0:
@@ -340,12 +358,52 @@ class Visualizer:
         if max_points is not None and (not isinstance(max_points, (int, np.integer)) or max_points <= 0):
             raise ValueError("max_points must be a positive integer.")
 
-        points = self.data.cartesian_coordinates
+        if space == "cartesian":
+            points = self.data.cartesian_coordinates
+            axis_names = ("X", "Y", "Z")
+            plot_axes = [0, 1, 2]
+            slice_index = None if slice_axis is None else "xyz".index(slice_axis)
+            title = "Workspace"
+        else:
+            points = self.data.joint_coordinates
+            n_coordinates = points.shape[1]
+            names = self.data.coordinate_names or tuple(f"q{i}" for i in range(n_coordinates))
+            if coordinate_axes is None:
+                if n_coordinates < 2:
+                    raise ValueError("Joint-space plots require at least two coordinates.")
+                plot_axes = list(range(min(2, n_coordinates)))
+            else:
+                if isinstance(coordinate_axes, (str, int, np.integer)):
+                    coordinate_axes = (coordinate_axes,)
+                plot_axes = []
+                for coordinate in coordinate_axes:
+                    if isinstance(coordinate, str):
+                        if coordinate not in names:
+                            raise ValueError(f"Unknown joint coordinate {coordinate!r}.")
+                        coordinate = names.index(coordinate)
+                    if not isinstance(coordinate, (int, np.integer)) or not 0 <= coordinate < n_coordinates:
+                        raise ValueError("coordinate_axes must contain valid joint-coordinate names or indices.")
+                    plot_axes.append(int(coordinate))
+                if len(plot_axes) not in (2, 3) or len(set(plot_axes)) != len(plot_axes):
+                    raise ValueError("coordinate_axes must select two or three distinct coordinates.")
+            axis_names = tuple(names)
+            if slice_coordinate is None:
+                slice_index = None
+            elif isinstance(slice_coordinate, str):
+                if slice_coordinate not in names:
+                    raise ValueError(f"Unknown joint coordinate {slice_coordinate!r}.")
+                slice_index = names.index(slice_coordinate)
+            elif isinstance(slice_coordinate, (int, np.integer)) and 0 <= slice_coordinate < n_coordinates:
+                slice_index = int(slice_coordinate)
+            else:
+                raise ValueError("slice_coordinate must be a valid joint-coordinate name or index.")
+            if slice_index is not None and slice_index in plot_axes:
+                raise ValueError("slice_coordinate must not also appear in coordinate_axes.")
+            title = "Joint space"
         mask = np.isfinite(points).all(axis=1)
         if filter_success:
             mask &= self.data.success[:, force_index]
         values, norm, colormap = None, None, None
-        title = "Workspace"
         if field != "workspace":
             attribute, label, default_cmap, default_range = self._FIELDS[field]
             array = getattr(self.data, attribute)
@@ -374,14 +432,21 @@ class Visualizer:
             norm = Normalize(*limits, clip=True)
             colormap = plt.get_cmap(cmap or default_cmap)
 
-        origin = np.zeros(3) if reference_marker is None else self._marker_position(reference_marker)
-        axis = None if slice_axis is None else "xyz".index(slice_axis)
+        if space == "cartesian":
+            origin = np.zeros(3) if reference_marker is None else self._marker_position(reference_marker)
+        else:
+            if reference_marker is not None:
+                raise ValueError("reference_marker applies only in Cartesian space.")
+            origin = np.zeros(points.shape[1])
+        axis = slice_index
         if axis is not None:
             if not np.isfinite(slice_value):
                 raise ValueError("slice_value must be finite.")
-            plane = origin[axis] + slice_value
+            plane = (origin[axis] + slice_value) if space == "cartesian" else slice_value
             mask &= np.abs(points[:, axis] - plane) <= tolerance
-            title += f" | {slice_axis}={plane:.3f} +/- {tolerance:g} m"
+            axis_label = slice_axis if space == "cartesian" else axis_names[axis]
+            unit = " m" if space == "cartesian" else ""
+            title += f" | {axis_label}={plane:.3f} +/- {tolerance:g}{unit}"
         indices = np.flatnonzero(mask)
         if len(indices) == 0:
             raise ValueError("No samples match the selection; check the slice and success filter.")
@@ -390,7 +455,7 @@ class Visualizer:
         selected_points = points[indices]
         force = self.data.forces[force_index]
         title += f" | F[{force_index}]={np.array2string(force, precision=2)} N"
-        if show_force and not np.isfinite(force).all():
+        if show_force and space == "cartesian" and not np.isfinite(force).all():
             raise ValueError("Cannot draw a non-finite force vector.")
         if force_origin is not None:
             force_origin = np.asarray(force_origin, dtype=float)
@@ -407,8 +472,9 @@ class Visualizer:
 
         displayed = selected_points - origin
         fig = plt.figure()
-        ax = fig.add_subplot(111, projection="3d") if axis is None else fig.add_subplot(111)
-        axes = [0, 1, 2] if axis is None else [i for i in range(3) if i != axis]
+        axes = plot_axes if space == "joint" or axis is None else [i for i in plot_axes if i != axis]
+        is_3d = len(axes) == 3
+        ax = fig.add_subplot(111, projection="3d") if is_3d else fig.add_subplot(111)
         style = {"s": point_size, "alpha": opacity}
         if values is None:
             style["color"] = "tab:blue"
@@ -417,20 +483,24 @@ class Visualizer:
         scatter = ax.scatter(*(displayed[:, i] for i in axes), **style)
         if values is not None:
             fig.colorbar(scatter, ax=ax, label=label, shrink=0.8)
-        reference = "ground" if reference_marker is None else reference_marker
-        ax.set_xlabel(f"{'XYZ'[axes[0]]} relative to {reference} [m]")
-        ax.set_ylabel(f"{'XYZ'[axes[1]]} relative to {reference} [m]")
-        if axis is None:
-            ax.set_zlabel(f"Z relative to {reference} [m]")
-            span = np.ptp(displayed, axis=0)
-            ax.set_box_aspect(np.maximum(span, max(float(span.max()), 1e-3) * 0.01))
+        if space == "cartesian":
+            reference = "ground" if reference_marker is None else reference_marker
+            labels = [f"{'XYZ'[i]} relative to {reference} [m]" for i in axes]
         else:
+            labels = [axis_names[i] for i in axes]
+        ax.set_xlabel(labels[0])
+        ax.set_ylabel(labels[1])
+        if is_3d:
+            ax.set_zlabel(labels[2])
+            span = np.ptp(displayed[:, axes], axis=0)
+            ax.set_box_aspect(np.maximum(span, max(float(span.max()), 1e-3) * 0.01))
+        elif space == "cartesian":
             ax.set_aspect("equal", adjustable="box")
-        if show_force and np.linalg.norm(force) > 0:
+        if show_force and space == "cartesian" and np.linalg.norm(force) > 0:
             # Without a model this is a reference arrow at the selected cloud's centre.
             start = (selected_points.mean(axis=0) if force_origin is None else force_origin) - origin
             vector = force_scale * force
-            if axis is None:
+            if is_3d:
                 ax.quiver(*start, *vector, color="tab:blue", normalize=False)
             elif np.linalg.norm(vector[axes]) > 0:
                 ax.quiver(*start[axes], *vector[axes], angles="xy", scale_units="xy", scale=1, color="tab:blue")
@@ -461,9 +531,14 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("npz_path", type=Path)
-    parser.add_argument("--model_path", type=Path, help="Matching .osim file (required for Simbody)")
+    parser.add_argument("--model", "--model_path", dest="model_path", type=Path,
+                        help="Matching .osim file (required for Simbody)")
     parser.add_argument("--field", choices=["workspace", *Visualizer._FIELDS], default="dominance")
-    parser.add_argument("--muscle", type=int, help="Muscle column index")
+    parser.add_argument("--space", choices=["cartesian", "joint"], default="cartesian")
+    parser.add_argument("--coordinate-axes", type=int, nargs="+", metavar="INDEX",
+                        help="Joint coordinate indices to plot (two or three).")
+    parser.add_argument("--slice-coordinate", help="Joint coordinate index or name to slice.")
+    parser.add_argument("--muscle", help="Muscle name or column index")
     parser.add_argument("--force", type=int, default=0, help="Flattened force index")
     parser.add_argument("--backend", choices=["matplotlib", "simbody"], default="matplotlib")
     parser.add_argument("--slice-axis", choices=["x", "y", "z"])
@@ -475,7 +550,21 @@ if __name__ == "__main__":
     parser.add_argument("--opacity", type=float, default=1.0, help="Point opacity in the range [0, 1]")
     args = parser.parse_args()
     viewer = Visualizer.from_npz(args.npz_path, model_path=args.model_path)
-    viewer.show(args.field, muscle=args.muscle, force_index=args.force, backend=args.backend,
+    slice_coordinate = args.slice_coordinate
+    if slice_coordinate is not None:
+        try:
+            slice_coordinate = int(slice_coordinate)
+        except ValueError:
+            pass
+    muscle = args.muscle
+    if muscle is not None:
+        try:
+            muscle = int(muscle)
+        except ValueError:
+            pass
+    viewer.show(args.field, muscle=muscle, force_index=args.force, backend=args.backend,
+                space=args.space, coordinate_axes=args.coordinate_axes,
+                slice_coordinate=slice_coordinate,
                 slice_axis=args.slice_axis, slice_value=args.slice_value, tolerance=args.tolerance,
                 reference_marker=args.reference_marker, max_points=args.max_points,
                 radius=args.radius, opacity=args.opacity)

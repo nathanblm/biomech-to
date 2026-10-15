@@ -1,4 +1,8 @@
 .vscode/
 *__pycache__/
 tests/
-results/
+
+/results/*
+!/results/tsm_4DOF/
+/results/tsm_4DOF/*
+!/results/tsm_4DOF/p1e4_m1_d1_fx-20_fy0_fz0.npz

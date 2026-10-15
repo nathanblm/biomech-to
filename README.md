@@ -1,60 +1,61 @@
-
 # Viewing maps
 
-The current result archive is:
+The visualizer reads a result `.npz` archive and displays a muscle map or the
+sampled workspace. Choose a force with `--force` (the example archive has one,
+so use `0`) and a map with `--field`:
 
-```text
-results/tsm_4DOF/p1e5_m1_d1_fx-20_fy0_fz0.npz
-```
+| Field | Muscle argument | Meaning |
+| --- | --- | --- |
+| `activation` | `--muscle NAME` or `--muscle INDEX` | Muscle activation |
+| `muscle_force` | `--muscle NAME` or `--muscle INDEX` | Muscle force in N |
+| `fatigue` | `--muscle NAME` or `--muscle INDEX` | Fatigue coefficient in s⁻¹ |
+| `dominance` | None | Agonist–antagonist fatigue dominance |
+| `workspace` | None | Sampled positions |
 
-Use the visualizer with the matching OpenSim model. The `--force` value is the
-flattened force index; for the current archive, use `0`.
+For muscle fields, select a muscle by its saved name (for example,
+`--muscle BIC_long`) or by its column index (for example, `--muscle 0`). Dominance is
+positive when the agonist group accumulates more fatigue, negative when the
+antagonist group does, and near zero when they are similar. The configured
+groups are `BIC_long`, `BIC_brevis` (agonists) and `TRIlong` (antagonist).
+
+## Cartesian space
+
+Cartesian plots use Matplotlib by default. For a 3D OpenSim view, pass the
+matching model and `--backend simbody`:
 
 ```bash
 RESULTS=results/tsm_4DOF/p1e5_m1_d1_fx-20_fy0_fz0.npz
 MODEL=musculoskeletal_models/tsm_4DOF/tsm_4DOF.osim
+
+python3 -m code.visualizer "$RESULTS" --field activation --muscle 0 --force 0
+python3 -m code.visualizer "$RESULTS" --model "$MODEL" --backend simbody \
+  --field dominance --force 0
 ```
 
-## Maps
-
-Select a map with `--field`:
+To show a Cartesian slice in Simbody, provide the model, axis, and position.
+`--reference-marker` makes the slice position relative to that marker's default
+pose:
 
 ```bash
-# Muscle activation map
-python3 -m code.visualizer "$RESULTS" --model "$MODEL" \
-  --backend simbody --field activation --muscle 0 --force 0
-
-# Muscle force map
-python3 -m code.visualizer "$RESULTS" --model "$MODEL" \
-  --backend simbody --field muscle_force --muscle 0 --force 0
-
-# Fatigue map
-python3 -m code.visualizer "$RESULTS" --model "$MODEL" \
-  --backend simbody --field fatigue --muscle 0 --force 0
-
-# Agonist–antagonist fatigue dominance map
-python3 -m code.visualizer "$RESULTS" --model "$MODEL" \
-  --backend simbody --field dominance --force 0
+python3 -m code.visualizer "$RESULTS" --model "$MODEL" --backend simbody \
+  --field dominance --force 0 \
+  --slice-axis y --slice-value -0.1 --reference-marker ac --tolerance 0.05
 ```
 
-For `activation`, `muscle_force`, and `fatigue`, replace `--muscle 0` with the
-index of the muscle to inspect. The archive must contain the corresponding map.
-The dominance map is group-level, so it does not take `--muscle`.
+## Joint space
 
-Positive dominance values indicate greater fatigue accumulation in the
-agonist group; negative values indicate greater accumulation in the antagonist
-group. Values near zero indicate similar accumulation. The currently configured
-groups are agonists `BIC_long`, `BIC_brevis` and antagonist `TRIlong`; update
-the groups in `code/mm_builder.py` when generating a different comparison.
-
-To inspect a workspace slice, add for example:
+Use `--space joint` to plot the saved joint-coordinate samples. Select two or
+three coordinates with `--coordinate-axes`; for a slice, choose another
+coordinate with `--slice-coordinate` and `--slice-value`:
 
 ```bash
---slice-axis y --slice-value -0.1 --reference-marker ac --tolerance 0.05
+python3 -m code.visualizer "$RESULTS" --space joint \
+  --field activation --muscle 0 --force 0 \
+  --coordinate-axes 0 1 --slice-coordinate 2 --slice-value 0.5 --tolerance 0.05
 ```
 
-For Simbody point appearance, adjust `--radius` (metres) and `--opacity`:
+Coordinate selectors accept indices in the archive's order. Saved coordinate
+names can also be used for `--slice-coordinate`. Joint-space plots use Matplotlib.
 
-```bash
---radius 0.006 --opacity 1.0
-```
+`--max-points N` subsamples only the display. For Simbody appearance, adjust
+`--radius` (metres) and `--opacity` (0–1).

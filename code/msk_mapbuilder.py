@@ -449,7 +449,9 @@ class MusculoskeletalMapBuilder:
             muscle_force_map=self.results.muscle_force_map,
             success=self.results.success,
             fatigue_map=self.results.fatigue_map,
-            fatigue_dominance_map=self.results.fatigue_dominance_map
+            fatigue_dominance_map=self.results.fatigue_dominance_map,
+            coordinate_names=np.asarray(self.info.joint_coordinate_names),
+            muscle_names=np.asarray(self.info.muscle_names),
         )
 
     def create_visualizer(self, npz_path, *, endpoint_marker="endpoint"):
@@ -464,14 +466,14 @@ if __name__ == "__main__":
     from opensim import Model
 
     ROOT = Path(__file__).parent.parent
-    model_path = ROOT / "musculoskeletal_models" / "arm26_3DOF" / "arm26_3DOF.osim"
-    npz_path = ROOT / "results" / "ts_model_4DOF" / "p1e3_m1_d1.npz"
-    agonists = ["TRImed", "TRIlat", "TRIlong"]
-    antagonists = ["BICshort", "BIClong", "BRA"]
+    #model_path = ROOT / "musculoskeletal_models" / "arm26_3DOF" / "arm26_3DOF.osim"
+    #npz_path = ROOT / "results" / "ts_model_4DOF" / "p1e3_m1_d1.npz"
+    #agonists = ["TRImed", "TRIlat", "TRIlong"]
+    #antagonists = ["BICshort", "BIClong", "BRA"]
 
-    #model_path = ROOT / "musculoskeletal_models" / "tsm_4DOF" / "tsm_4DOF.osim"
-    #agonists = ["BIC_long", "BIC_brevis"]
-    #antagonists = ["TRIlong"]
+    model_path = ROOT / "musculoskeletal_models" / "tsm_4DOF" / "tsm_4DOF.osim"
+    agonists = ["BIC_long", "BIC_brevis"]
+    antagonists = ["TRIlong"]
 
     model = Model(str(model_path))
 
@@ -479,8 +481,7 @@ if __name__ == "__main__":
 
     mm_builder = MusculoskeletalMapBuilder.from_model(model, model_path=model_path)
 
-
-    mm_builder.generate_position_samples(n_samples=100000)
+    mm_builder.generate_position_samples(n_samples=10000)
 
     one_direction = np.array([[-1.0, 0.0, 0.0]])
     one_magnitude = np.array([20.0])
