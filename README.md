@@ -9,7 +9,7 @@ so use `0`) and a map with `--field`:
 | --- | --- | --- |
 | `activation` | `--muscle NAME` or `--muscle INDEX` | Muscle activation |
 | `muscle_force` | `--muscle NAME` or `--muscle INDEX` | Muscle force in N |
-| `fatigue` | `--muscle NAME` or `--muscle INDEX` | Fatigue coefficient in s⁻¹ |
+| `fatigue` | `--muscle NAME` or `--muscle INDEX` | Fatigue coefficient |
 | `dominance` | None | Agonist–antagonist fatigue dominance |
 | `workspace` | None | Sampled positions |
 
@@ -67,7 +67,7 @@ names can also be used for `--slice-coordinate`. Joint-space plots use Matplotli
 python3 -m code.visualizer results/arm26_3DOF/datasets/msk_dataset_p1e5_m1_d1_fx-20_fy0_fz0.npz \
   --model musculoskeletal_models/arm26_3DOF/arm26_3DOF.osim \
   --ocp-result results/arm26_3DOF/ocp/results_20261016_154356.npz --force 0 \
-  --slice-axis y --slice-value 0.6 --tolerance 0.05 --opacity 0.3
+  --slice-axis y --slice-value 0.6 --tolerance 0.05 --opacity 0.8
 ```
 
 This opens the Simbody dominance map with the OCP trajectory and a fatigue
