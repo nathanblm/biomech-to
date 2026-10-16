@@ -1,7 +1,8 @@
 # Viewing maps
 
-The visualizer reads a result `.npz` archive and displays a muscle map or the
-sampled workspace. Choose a force with `--force` (the example archive has one,
+The visualizer reads an `MSKdataset` saved by `save_msk_dataset()` in a `.npz`
+archive and displays a muscle map or the sampled workspace. Choose a force with
+`--force` (the example archive has one,
 so use `0`) and a map with `--field`:
 
 | Field | Muscle argument | Meaning |
@@ -16,7 +17,7 @@ For muscle fields, select a muscle by its saved name (for example,
 `--muscle BIC_long`) or by its column index (for example, `--muscle 0`). Dominance is
 positive when the agonist group accumulates more fatigue, negative when the
 antagonist group does, and near zero when they are similar. The configured
-groups are `BIC_long`, `BIC_brevis` (agonists) and `TRIlong` (antagonist).
+groups are stored as `agonist_muscles` and `antagonist_muscles` in `ModelInfo`.
 
 ## Cartesian space
 
@@ -24,7 +25,7 @@ Cartesian plots use Matplotlib by default. For a 3D OpenSim view, pass the
 matching model and `--backend simbody`:
 
 ```bash
-RESULTS=results/tsm_4DOF/p1e5_m1_d1_fx-20_fy0_fz0.npz
+RESULTS=results/tsm_4DOF/datasets/msk_dataset_p1e4_m1_d1_fx-20_fy0_fz0.npz
 MODEL=musculoskeletal_models/tsm_4DOF/tsm_4DOF.osim
 
 python3 -m code.visualizer "$RESULTS" --field activation --muscle 0 --force 0
@@ -59,3 +60,16 @@ names can also be used for `--slice-coordinate`. Joint-space plots use Matplotli
 
 `--max-points N` subsamples only the display. For Simbody appearance, adjust
 `--radius` (metres) and `--opacity` (0–1).
+
+## Visualize an optimization result
+
+```bash
+python3 -m code.visualizer results/arm26_3DOF/datasets/msk_dataset_p1e5_m1_d1_fx-20_fy0_fz0.npz \
+  --model musculoskeletal_models/arm26_3DOF/arm26_3DOF.osim \
+  --ocp-result results/arm26_3DOF/ocp/results_20261016_154356.npz --force 0 \
+  --slice-axis y --slice-value 0.6 --tolerance 0.05 --opacity 0.3
+```
+
+This opens the Simbody dominance map with the OCP trajectory and a fatigue
+chart. `--slice-axis`, `--slice-value`, and `--tolerance` set the slice; opacity
+defaults to `0.5` and can be changed with `--opacity`.

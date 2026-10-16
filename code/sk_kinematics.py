@@ -454,7 +454,7 @@ class Kinematics:
 if __name__ == "__main__":
     import opensim as osim
 
-    from .msk_mapbuilder import ModelInfo
+    from .msk_data import ModelInfo
 
     project_root = Path(__file__).resolve().parents[1]
     model_path = project_root / "musculoskeletal_models" / "tsm_4DOF" / "tsm_4DOF.osim"

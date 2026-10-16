@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
 import opensim as osim
@@ -9,6 +8,8 @@ from itertools import islice
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from rmr_solver import RMRsolver, ActSquared
 from .visualizer import Visualizer
+# These imports also resolve class paths in existing MSKdataset archives.
+from .msk_data import ModelInfo, SampleInputs, SampleResults, FatigueParameters, MSKdataset
 
 osim.Logger.setLevelString("Error")
 
@@ -32,15 +33,6 @@ def _init_worker(model_path, model_info, activation_dynamics=False):
 def _solve_task(task):
     return _worker_context.solve_task(task)
 
-def _cast_millard(muscle):
-    cast = osim.Millard2012EquilibriumMuscle.safeDownCast(muscle)
-    if cast is None:
-        raise TypeError(
-            f"Expected Millard2012EquilibriumMuscle for "
-            f"'{muscle.getName()}'; got {muscle.getConcreteClassName()}."
-        )
-    return cast
-
 def _scientific_int(value: int) -> str:
     mantissa, exponent = f"{value:.0e}".split("e")
     return f"{mantissa}e{int(exponent)}"
@@ -48,125 +40,6 @@ def _scientific_int(value: int) -> str:
 def _force_label(force):
     x, y, z = force
     return f"fx{x:g}_fy{y:g}_fz{z:g}"
-
-@dataclass
-class ModelInfo:
-    joint_coordinate_names: tuple[str, ...]     # len: n_coordinates
-    joint_coordinate_limits: np.ndarray         # (n_coordinates, 2)
-    muscle_names: tuple[str, ...]               # len: n_muscles
-    muscle_max_forces: np.ndarray               # (n_muscles,)
-    actuator_names: tuple[str, ...]             # len: n_actuators
-    muscle_actuator_indices: np.ndarray         # (n_muscles,)
-    prescribed_force_names: tuple[str, ...]     # len: n_prescribed_forces
-    prescribed_force_indices: tuple[int, ...]   # len: n_prescribed_forces
-
-    def __str__(self):
-        return (
-            f"ModelInfo(\n"
-            f"  joint_coordinate_names={self.joint_coordinate_names},\n"
-            f"  joint_coordinate_limits={self.joint_coordinate_limits},\n"
-            f"  muscle_names={self.muscle_names},\n"
-            f"  muscle_max_forces={self.muscle_max_forces},\n"
-            f"  actuator_names={self.actuator_names},\n"
-            f"  muscle_actuator_indices={self.muscle_actuator_indices},\n"
-            f"  prescribed_force_names={self.prescribed_force_names},\n"
-            f"  prescribed_force_indices={self.prescribed_force_indices}\n"
-            f")"
-        )
-
-    @classmethod
-    def from_model(cls, model):
-        coordinate_set = model.getCoordinateSet()
-        joint_coordinate_names = tuple(
-            coordinate.getName() 
-            for coordinate in coordinate_set 
-            if not coordinate.get_locked()
-        )
-        joint_coordinate_limits = np.asarray([
-            [coordinate.getRangeMin(), coordinate.getRangeMax()]
-            for coordinate in coordinate_set
-            if not coordinate.get_locked()
-        ])
-
-        muscle_set = model.getMuscles()
-        muscle_names = tuple(
-            _cast_millard(muscle).getName()
-            for muscle in muscle_set
-        )
-        muscle_max_forces = np.asarray([
-            _cast_millard(muscle).getMaxIsometricForce()
-            for muscle in muscle_set
-        ])
-
-        actuator_set = model.getActuators()
-        actuator_names = tuple(
-            actuator.getName()
-            for actuator in actuator_set
-        )
-        muscle_actuator_indices = np.asarray([
-            actuator_set.getIndex(actuator_name)
-            for actuator_name in muscle_names
-        ])
-
-        force_set = model.getForceSet()
-        prescribed_force_names = tuple(
-            force.getName()
-            for force in force_set
-            if force.getConcreteClassName() == "PrescribedForce"
-        )
-        prescribed_force_indices = tuple([
-            force_set.getIndex(force)
-            for force in force_set
-            if force.getConcreteClassName() == "PrescribedForce"
-        ])
-        
-        return cls(
-            joint_coordinate_names=joint_coordinate_names,
-            joint_coordinate_limits=joint_coordinate_limits,
-            muscle_names=muscle_names,
-            muscle_max_forces=muscle_max_forces,
-            actuator_names=actuator_names,
-            muscle_actuator_indices=muscle_actuator_indices,
-            prescribed_force_names=prescribed_force_names,
-            prescribed_force_indices=prescribed_force_indices
-        )
-
-@dataclass
-class Samples:
-    joint_coordinates: np.ndarray               # (n_position_samples, n_coordinates)
-    cartesian_coordinates: np.ndarray           # (n_position_samples, 3)
-    force_magnitudes: np.ndarray                # (n_magnitudes,)
-    force_directions: np.ndarray                # (n_directions, 3)
-    forces: np.ndarray                          # (n_magnitudes, n_directions, 3)
-
-    @classmethod
-    def empty(cls, n_joint_coordinates):
-        return cls(
-            joint_coordinates=np.empty((0, n_joint_coordinates)),
-            cartesian_coordinates=np.empty((0, 3)),
-            force_magnitudes=np.empty((0,)),
-            force_directions=np.empty((0, 3)),
-            forces=np.empty((0, 0, 3))
-        )
-
-@dataclass
-class Results:
-    sample_activations: np.ndarray                  # (n_samples, n_forces, n_muscles)
-    sample_muscle_forces: np.ndarray                # (n_samples, n_forces, n_muscles)
-    sample_success: np.ndarray                      # (n_samples, n_forces)
-    sample_fatigue_rates: np.ndarray                # (n_samples, n_forces, n_muscles)
-    sample_fatigue_dominance: np.ndarray            # (n_samples, n_forces)
-
-    @classmethod
-    def empty(cls):
-        return cls(
-            sample_activations=np.empty((0, 0, 0)),
-            sample_muscle_forces=np.empty((0, 0, 0)),
-            sample_success=np.empty((0, 0), dtype=bool),
-            sample_fatigue_rates=np.empty((0, 0, 0)),
-            sample_fatigue_dominance=np.empty((0, 0, 0))
-        )
-
 
 class RMRWorkerContext:
     def __init__(self, model, model_info, activation_dynamics=False):
@@ -220,41 +93,33 @@ class RMRWorkerContext:
             info["success"],
         )
 
-class MusculoskeletalSampleBuilder:
+class MusculoskeletalDatasetBuilder:
     def __init__(self, model, info: ModelInfo, *, model_path=None):
         self.model = model
         self.info = info
-        self.model_path = Path(model_path).resolve()
+        self.model_path = Path(model_path).resolve() if model_path is not None else None
         self.state = model.initSystem()
+        
+        self.fatigue_params = FatigueParameters.from_max_forces(self.info.muscle_max_forces)
 
-        self.samples = Samples.empty(n_joint_coordinates=len(info.joint_coordinate_names))
-        self.results = Results.empty()
+        self.inputs = SampleInputs.empty(n_joint_coordinates=len(info.joint_coordinate_names))
+        self.results = SampleResults.empty()
 
     @classmethod
-    def from_model(cls, model, *, model_path=None):
-        builder = cls(model, ModelInfo.from_model(model), model_path=model_path)
+    def from_model(cls, model, *, model_path=None, agonists=(), antagonists=()):
+        info = ModelInfo.from_model(model, agonists=agonists, antagonists=antagonists)
+        builder = cls(model, info, model_path=model_path)
         return builder
 
     @classmethod
     def from_npz(cls, model, npz_path, *, model_path=None):
         builder = cls.from_model(model, model_path=model_path)
 
-        with np.load(npz_path) as data:
-            builder.samples = Samples(
-                joint_coordinates=data["joint_coordinate_samples"],
-                cartesian_coordinates=data["cartesian_coordinate_samples"],
-                force_magnitudes=data["force_magnitude_samples"],
-                force_directions=data["force_direction_samples"],
-                forces=data["force_samples"]
-            )
-
-            builder.results = Results(
-                sample_activations=data["sample_activations"],
-                sample_muscle_forces=data["sample_muscle_forces"],
-                sample_success=data["sample_success"],
-                sample_fatigue_rates=data.get("sample_fatigue_rates"),
-                sample_fatigue_dominance=data.get("sample_fatigue_dominance")
-            )
+        dataset = MSKdataset.from_npz(npz_path)
+        builder.info = dataset.info
+        builder.inputs = dataset.samples
+        builder.results = dataset.results
+        builder.fatigue_params = dataset.fatigue_params
 
         return builder
 
@@ -303,8 +168,8 @@ class MusculoskeletalSampleBuilder:
         joint_samples = _order_joint_samples(joint_samples)
         cartesian_samples = _compute_cartesian_coordinates(joint_samples)
 
-        self.samples.joint_coordinates = joint_samples
-        self.samples.cartesian_coordinates = cartesian_samples
+        self.inputs.joint_coordinates = joint_samples
+        self.inputs.cartesian_coordinates = cartesian_samples
 
     def generate_force_samples(
             self,
@@ -339,13 +204,14 @@ class MusculoskeletalSampleBuilder:
 
             directions = directions / norms[:, None]
 
-            self.samples.force_magnitudes = magnitudes
-            self.samples.force_directions = directions
-            self.samples.forces = (magnitudes[:, None, None] * directions[None, :, :]).reshape(-1, 3)
+            self.inputs.force_magnitudes = magnitudes
+            self.inputs.force_directions = directions
+            self.inputs.forces = (magnitudes[:, None, None] * directions[None, :, :]).reshape(-1, 3)
             
     def evaluate_sample_activations_and_muscle_forces(self, *, workers=4, activation_dynamics=False):
-        n_positions = len(self.samples.joint_coordinates)
-        n_forces = len(self.samples.forces)
+
+        n_positions = len(self.inputs.joint_coordinates)
+        n_forces = len(self.inputs.forces)
         n_muscles = len(self.info.muscle_names)
         total_tasks = n_positions * n_forces
 
@@ -354,7 +220,7 @@ class MusculoskeletalSampleBuilder:
         success = np.zeros((n_positions, n_forces), dtype=bool)
 
         tasks = (
-            (i, j, self.samples.joint_coordinates[i], self.samples.forces[j])
+            (i, j, self.inputs.joint_coordinates[i], self.inputs.forces[j])
             for i in range(n_positions)
             for j in range(n_forces)
         )
@@ -390,18 +256,16 @@ class MusculoskeletalSampleBuilder:
 
         return self.results
 
-    def compute_sample_fatigue_rates(self, *, T=10.0, F=None):
-        if F is None:
-            F = self.info.muscle_max_forces
+    def compute_sample_fatigue_rates(self):
+        rates = self.results.sample_muscle_forces / self.fatigue_params.capacity[None, None, :]
+        self.results.sample_fatigue_rates = rates
+        return rates
 
-        # based on formula from https://doi.org/10.1016/j.rcim.2019.01.013
-        C = - ( T * F ) / np.log(1 - 0.993)
-
-        sample_fatigue_rates = self.results.sample_muscle_forces / C[None, None, :]
-        self.results.sample_fatigue_rates = sample_fatigue_rates
-        return sample_fatigue_rates
-
-    def compute_sample_fatigue_dominance(self, agonists, antagonists):
+    def compute_sample_fatigue_dominance(self):
+        agonists = self.info.agonist_muscles
+        antagonists = self.info.antagonist_muscles
+        if not agonists or not antagonists:
+            raise ValueError("ModelInfo must define both agonist_muscles and antagonist_muscles.")
         agonist_indices = [self.info.muscle_names.index(name) for name in agonists]
         antagonist_indices = [self.info.muscle_names.index(name) for name in antagonists]
 
@@ -421,48 +285,48 @@ class MusculoskeletalSampleBuilder:
         self.results.sample_fatigue_dominance = sample_fatigue_dominance
         return sample_fatigue_dominance
 
-    def save_results(self, *, results_dir=None, tag=None):
+    def save_msk_dataset(self, *, results_dir=None, tag=None):
         if results_dir is None:
             ROOT = Path(__file__).parent.parent
-            results_dir = ROOT / "results" / self.model.getName()
+            results_dir = ROOT / "results" / self.model.getName() / "datasets"
 
+        results_dir = Path(results_dir)
         results_dir.mkdir(parents=True, exist_ok=True)
 
-        if not tag and self.samples.forces.shape[0] == 1:
-                tag = _force_label(self.samples.forces[0])
+        if not tag and self.inputs.forces.shape[0] == 1:
+            tag = _force_label(self.inputs.forces[0])
 
         filename = (
-            f"p{_scientific_int(self.samples.joint_coordinates.shape[0])}"
-            f"_m{self.samples.force_magnitudes.shape[0]}"
-            f"_d{self.samples.force_directions.shape[0]}"
+            f"msk_dataset_p{_scientific_int(self.inputs.joint_coordinates.shape[0])}"
+            f"_m{self.inputs.force_magnitudes.shape[0]}"
+            f"_d{self.inputs.force_directions.shape[0]}"
             f"{'_' + tag if tag else ''}.npz"
         )
 
-        np.savez_compressed(
-            results_dir / filename,
-            joint_coordinate_samples=self.samples.joint_coordinates,
-            cartesian_coordinate_samples=self.samples.cartesian_coordinates,
-            force_magnitude_samples=self.samples.force_magnitudes,
-            force_direction_samples=self.samples.force_directions,
-            force_samples=self.samples.forces,
-            sample_activations=self.results.sample_activations,
-            sample_muscle_forces=self.results.sample_muscle_forces,
-            sample_success=self.results.sample_success,
-            sample_fatigue_rates=self.results.sample_fatigue_rates,
-            sample_fatigue_dominance=self.results.sample_fatigue_dominance,
-            coordinate_names=np.asarray(self.info.joint_coordinate_names),
-            muscle_names=np.asarray(self.info.muscle_names),
+        output_path = results_dir / filename
+        dataset = MSKdataset(
+            info=self.info,
+            samples=self.inputs,
+            results=self.results,
+            fatigue_params=self.fatigue_params,
         )
+        return dataset.save_npz(output_path)
 
     def create_visualizer(self, npz_path, *, endpoint_marker="endpoint"):
-        return Visualizer.from_npz(
-            npz_path,
+        saved = type(self).from_npz(self.model, npz_path, model_path=self.model_path)
+        data = MSKdataset(
+            info=saved.info,
+            samples=saved.inputs,
+            results=saved.results,
+            fatigue_params=saved.fatigue_params,
+        )
+        return Visualizer(
             model=self.model,
-            muscle_names=self.info.muscle_names,
+            data=data,
             endpoint_marker=endpoint_marker,
         )   
 
-if __name__ == "__main__":
+def main():
     from opensim import Model
 
     ROOT = Path(__file__).parent.parent
@@ -477,9 +341,14 @@ if __name__ == "__main__":
 
     model = Model(str(model_path))
 
-    #mm_builder = MusculoskeletalSampleBuilder.from_npz(model, npz_path, model_path=model_path)
+    #mm_builder = MusculoskeletalDatasetBuilder.from_npz(model, npz_path, model_path=model_path)
 
-    mm_builder = MusculoskeletalSampleBuilder.from_model(model, model_path=model_path)
+    mm_builder = MusculoskeletalDatasetBuilder.from_model(
+        model, 
+        model_path=model_path, 
+        agonists=agonists, 
+        antagonists=antagonists
+    )
 
     mm_builder.generate_position_samples(n_samples=100000)
 
@@ -503,9 +372,9 @@ if __name__ == "__main__":
 
     mm_builder.compute_sample_fatigue_rates()
 
-    mm_builder.compute_sample_fatigue_dominance(agonists, antagonists)
+    mm_builder.compute_sample_fatigue_dominance()
 
-    mm_builder.save_results()
+    mm_builder.save_msk_dataset()
 
     #viewer = mm_builder.create_visualizer(npz_path)
 
@@ -520,5 +389,6 @@ if __name__ == "__main__":
     #    opacity=1.0,
     #)
 
-        
 
+if __name__ == "__main__":
+    main()

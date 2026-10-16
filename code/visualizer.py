@@ -1,4 +1,3 @@
-from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Optional, Union
 import numpy as np
@@ -7,70 +6,9 @@ from matplotlib.colors import Normalize
 import os
 import sys
 
+from .msk_data import MSKdataset
+
 os.environ.setdefault("SIMBODY_HOME", str(Path(sys.prefix) / "simbody"))
-
-
-@dataclass
-class SampleData:
-    joint_coordinate_samples: np.ndarray                   # (n_positions, n_coordinates)
-    cartesian_coordinate_samples: np.ndarray               # (n_positions, 3), ground XYZ, m
-    force_magnitude_samples: np.ndarray                    # (n_magnitudes,), N
-    force_direction_samples: np.ndarray                    # (n_directions, 3)
-    force_samples: np.ndarray                              # (n_forces, 3), ground XYZ, N
-    sample_activations: np.ndarray                         # (n_positions, n_forces, n_muscles)
-    sample_muscle_forces: np.ndarray                       # same shape, N
-    sample_success: np.ndarray                             # (n_positions, n_forces), bool
-    sample_fatigue_rates: Optional[np.ndarray] = None      # same shape as activations, s^-1
-    sample_fatigue_dominance: Optional[np.ndarray] = None  # (n_positions, n_forces)
-    muscle_names: tuple = ()                                # Optional, in sample-value column order
-    coordinate_names: tuple = ()                             # Optional, in joint-coordinate order
-
-    def __post_init__(self):
-        if self.joint_coordinate_samples.ndim != 2:
-            raise ValueError("joint_coordinate_samples must be a 2D array.")
-        n_positions = len(self.joint_coordinate_samples)
-        if self.force_samples.ndim != 2 or self.force_samples.shape[1] != 3:
-            raise ValueError("force_samples must have shape (n_forces, 3).")
-        n_forces = len(self.force_samples)
-        if self.sample_activations.ndim != 3:
-            raise ValueError("sample_activations must be a 3D array.")
-        shape = (n_positions, n_forces, self.sample_activations.shape[2])
-        expected = {
-            "cartesian_coordinate_samples": (n_positions, 3),
-            "sample_activations": shape, "sample_muscle_forces": shape,
-            "sample_success": shape[:2], "sample_fatigue_rates": shape,
-            "sample_fatigue_dominance": shape[:2],
-        }
-        for name, target in expected.items():
-            array = getattr(self, name)
-            if array is not None and array.shape != target:
-                raise ValueError(f"{name}: expected {target}, got {array.shape}.")
-        if self.sample_success.dtype != np.bool_:
-            raise ValueError("sample_success must be a boolean array.")
-        if self.force_magnitude_samples.ndim != 1:
-            raise ValueError("force_magnitude_samples must be a 1D array.")
-        if self.force_direction_samples.ndim != 2 or self.force_direction_samples.shape[1] != 3:
-            raise ValueError("force_direction_samples must have shape (n_directions, 3).")
-        if len(self.force_magnitude_samples) * len(self.force_direction_samples) != n_forces:
-            raise ValueError("Force count does not match magnitude/direction combinations.")
-        self.muscle_names = tuple(self.muscle_names)
-        if self.muscle_names and len(self.muscle_names) != shape[2]:
-            raise ValueError("muscle_names must match the number of muscle columns.")
-        self.coordinate_names = tuple(self.coordinate_names)
-        if self.coordinate_names and len(self.coordinate_names) != self.joint_coordinate_samples.shape[1]:
-            raise ValueError("coordinate_names must match the joint-coordinate axis.")
-
-    @classmethod
-    def from_npz(cls, npz_path: Union[Path, str]):
-        optional = {"sample_fatigue_rates", "sample_fatigue_dominance", "muscle_names", "coordinate_names"}
-        values = {}
-        with np.load(Path(npz_path), allow_pickle=False) as data:
-            for field in fields(cls):
-                if field.name in data:
-                    values[field.name] = data[field.name]
-                elif field.name not in optional:
-                    raise ValueError(f"Archive is missing '{field.name}'.")
-        return cls(**values)
 
 
 class SimbodyRenderer:
@@ -85,6 +23,8 @@ class SimbodyRenderer:
         self.visualizer = self.model.getVisualizer().updSimbodyVisualizer()
         self.ground = self.model.getGround().getMobilizedBodyIndex()
         self.point_ids, self.line_ids = [], []
+        self.trajectory_line_ids, self.reference_line_ids = [], []
+        self.trajectory_marker_ids = []
         self.caption_id = None
 
         # Kept here so importing this module does not require OpenSim.
@@ -157,6 +97,46 @@ class SimbodyRenderer:
                 self.visualizer.updDecoration(self.line_ids[i]).implementGeometry(self.updater)
             self.visualizer.updDecoration(self.line_ids[i]).setRepresentation(osim.DecorativeGeometry.DrawSurface)
 
+    def _set_path(self, points, identifiers, color, thickness):
+        osim = self.osim
+        for identifier in identifiers:
+            self.visualizer.updDecoration(identifier).setRepresentation(osim.DecorativeGeometry.Hide)
+        identifiers.clear()
+
+        points = np.asarray(points, dtype=float)
+        for start, end in zip(points[:-1], points[1:]):
+            if not np.isfinite(start).all() or not np.isfinite(end).all():
+                continue
+            line = osim.DecorativeLine(self._vec3(start), self._vec3(end))
+            line.setLineThickness(thickness)
+            line.setColor(self._vec3(color))
+            identifier = self._add(line)
+            self.visualizer.updDecoration(identifier).setRepresentation(osim.DecorativeGeometry.DrawSurface)
+            identifiers.append(identifier)
+
+    def _set_trajectory_markers(self, points, radius):
+        osim = self.osim
+        points = np.asarray(points, dtype=float)
+        finite = points[np.isfinite(points).all(axis=1)]
+        if not len(finite):
+            for identifier in self.trajectory_marker_ids:
+                self.visualizer.updDecoration(identifier).setRepresentation(osim.DecorativeGeometry.Hide)
+            return
+
+        endpoints = (finite[0], finite[-1])
+        colors = ((0.1, 0.8, 0.2), (1.0, 0.2, 0.1))
+        for i, (point, color) in enumerate(zip(endpoints, colors)):
+            if i == len(self.trajectory_marker_ids):
+                marker = osim.DecorativeSphere(1.0)
+                marker.setResolution(0.25)
+                self.trajectory_marker_ids.append(self._add(marker))
+            item = self.visualizer.updDecoration(self.trajectory_marker_ids[i])
+            item.setTransform(osim.Transform(self._vec3(point)))
+            marker_radius = max(2.5 * radius, 0.008)
+            item.setScaleFactors(osim.Vec3(marker_radius, marker_radius, marker_radius))
+            item.setColor(self._vec3(color))
+            item.setRepresentation(osim.DecorativeGeometry.DrawSurface)
+
     def _set_caption(self, caption):
         self.updater.text = caption
         if self.caption_id is None:
@@ -168,10 +148,16 @@ class SimbodyRenderer:
             self.visualizer.updDecoration(self.caption_id).implementGeometry(self.updater)
 
     def show(self, points, colors, caption, *, force=None, radius=0.006,
-             opacity=1.0, force_scale=0.01, force_origin=None):
+             opacity=1.0, force_scale=0.01, force_origin=None,
+             trajectory=None, reference=None):
         # Update every decoration first, then display once.
         self._set_points(points, colors, radius, opacity)
         self._set_force(force, force_scale, force_origin)
+        trajectory = np.empty((0, 3)) if trajectory is None else trajectory
+        reference = np.empty((0, 3)) if reference is None else reference
+        self._set_path(trajectory, self.trajectory_line_ids, (1.0, 0.15, 0.05), 5)
+        self._set_path(reference, self.reference_line_ids, (0.55, 0.55, 0.55), 2)
+        self._set_trajectory_markers(trajectory, radius)
         self._set_caption(caption)
         self.model.getVisualizer().show(self.state)
         return len(points)
@@ -185,15 +171,12 @@ class Visualizer:
         "dominance": ("sample_fatigue_dominance", "Fatigue dominance", "coolwarm", (-1, 1)),
     }
 
-    def __init__(self, model=None, *, data: Optional[SampleData] = None,
+    def __init__(self, model=None, *, data: Optional["MSKdataset"] = None,
                  model_path=None, muscle_names=None,
                  endpoint_marker="endpoint"):
-        """Use an OpenSim model for motion export and optional sample data for plots."""
-        # Preserve the existing Visualizer(data, model_path=...) calling form.
-        if isinstance(model, SampleData):
-            if data is not None:
-                raise ValueError("Sample data was supplied twice.")
-            data, model = model, None
+        """Use an OpenSim model for motion export and an optional MSKdataset for plots."""
+        if data is not None:
+            self._validate_dataset(data)
         if isinstance(model, (str, Path)):
             if model_path is not None:
                 raise ValueError("Provide either model or model_path.")
@@ -209,17 +192,52 @@ class Visualizer:
         )
         self.endpoint_marker = endpoint_marker
         if muscle_names is None:
-            muscle_names = data.muscle_names if data is not None else ()
+            muscle_names = data.info.muscle_names if data is not None else ()
         self.muscle_names = tuple(muscle_names)
-        if data is not None and self.muscle_names and len(self.muscle_names) != data.sample_activations.shape[2]:
+        if data is not None and self.muscle_names and len(self.muscle_names) != len(data.info.muscle_names):
             raise ValueError("muscle_names must match the sample values' muscle axis.")
         self._renderer = None
         self._reference_model = None
         self._reference_state = None
 
+    @staticmethod
+    def _validate_dataset(data):
+        samples, results, info = data.samples, data.results, data.info
+        if samples.joint_coordinates.ndim != 2:
+            raise ValueError("samples.joint_coordinates must be a 2D array.")
+        if samples.forces.ndim != 2 or samples.forces.shape[1] != 3:
+            raise ValueError("samples.forces must have shape (n_forces, 3).")
+        n_positions = len(samples.joint_coordinates)
+        n_forces = len(samples.forces)
+        shape = (n_positions, n_forces, len(info.muscle_names))
+        if samples.cartesian_coordinates.shape != (n_positions, 3):
+            raise ValueError("samples.cartesian_coordinates must have shape (n_positions, 3).")
+        if len(info.joint_coordinate_names) != samples.joint_coordinates.shape[1]:
+            raise ValueError("info.joint_coordinate_names must match the joint-coordinate axis.")
+        if samples.force_magnitudes.ndim != 1:
+            raise ValueError("samples.force_magnitudes must be a 1D array.")
+        if samples.force_directions.ndim != 2 or samples.force_directions.shape[1] != 3:
+            raise ValueError("samples.force_directions must have shape (n_directions, 3).")
+        if len(samples.force_magnitudes) * len(samples.force_directions) != n_forces:
+            raise ValueError("Force count does not match magnitude/direction combinations.")
+        expected = {
+            "sample_activations": shape,
+            "sample_muscle_forces": shape,
+            "sample_success": shape[:2],
+            "sample_fatigue_rates": shape,
+            "sample_fatigue_dominance": shape[:2],
+        }
+        for name, target in expected.items():
+            array = getattr(results, name)
+            # Empty arrays represent results that have not been computed yet.
+            if array.size and array.shape != target:
+                raise ValueError(f"results.{name}: expected {target}, got {array.shape}.")
+        if results.sample_success.dtype != np.bool_:
+            raise ValueError("results.sample_success must be a boolean array.")
+
     @classmethod
     def from_npz(cls, npz_path: Union[Path, str], **kwargs):
-        return cls(data=SampleData.from_npz(npz_path), **kwargs)
+        return cls(data=MSKdataset.from_npz(npz_path), **kwargs)
 
     def _get_model(self):
         if self.model is None:
@@ -304,7 +322,7 @@ class Visualizer:
             return self.muscle_names.index(muscle)
         if not isinstance(muscle, (int, np.integer)):
             raise ValueError("Specify muscle as a name or integer index.")
-        if not 0 <= muscle < self.data.sample_activations.shape[2]:
+        if not 0 <= muscle < len(self.data.info.muscle_names):
             raise IndexError("Muscle index is out of range.")
         return int(muscle)
 
@@ -314,7 +332,7 @@ class Visualizer:
              tolerance=0.01, reference_marker=None, filter_success=True,
              value_range=None, cmap=None, max_points=None, radius=0.003,
              opacity=0.8, point_size=8, show_force=True, force_scale=0.01,
-             force_origin=None, block=True):
+             force_origin=None, trajectory=None, reference_trajectory=None, block=True):
         """Display sampled values in Cartesian or joint space; return (fig, ax) or point count.
 
         slice_axis: 'x', 'y' or 'z'. slice_value: absolute ground coordinate,
@@ -326,9 +344,10 @@ class Visualizer:
         value_range fixes the colour scale, useful for comparing sample evaluations.
         max_points optionally subsamples only the displayed points.
         force_scale is metres/Newton; force_origin is a ground-frame point.
+        trajectory and reference_trajectory optionally add paths to Simbody.
         """
         if self.data is None:
-            raise ValueError("Sample display requires data; pass SampleData or use Visualizer.from_npz().")
+            raise ValueError("Sample display requires data; pass an MSKdataset as data or use Visualizer.from_npz().")
         if backend not in ("matplotlib", "simbody"):
             raise ValueError("backend must be 'matplotlib' or 'simbody'.")
         if space not in ("cartesian", "joint"):
@@ -337,7 +356,7 @@ class Visualizer:
             raise ValueError("The Simbody backend displays Cartesian positions only.")
         if field != "workspace" and field not in self._FIELDS:
             raise ValueError(f"Unknown field {field!r}; use {tuple(self._FIELDS)} or 'workspace'.")
-        if not isinstance(force_index, (int, np.integer)) or not 0 <= force_index < len(self.data.force_samples):
+        if not isinstance(force_index, (int, np.integer)) or not 0 <= force_index < len(self.data.samples.forces):
             raise IndexError("force_index is outside the saved force samples.")
         if space == "cartesian" and (slice_axis is None) != (slice_value is None):
             raise ValueError("Provide slice_axis and slice_value together.")
@@ -359,15 +378,15 @@ class Visualizer:
             raise ValueError("max_points must be a positive integer.")
 
         if space == "cartesian":
-            points = self.data.cartesian_coordinate_samples
+            points = self.data.samples.cartesian_coordinates
             axis_names = ("X", "Y", "Z")
             plot_axes = [0, 1, 2]
             slice_index = None if slice_axis is None else "xyz".index(slice_axis)
             title = "Workspace"
         else:
-            points = self.data.joint_coordinate_samples
+            points = self.data.samples.joint_coordinates
             n_coordinates = points.shape[1]
-            names = self.data.coordinate_names or tuple(f"q{i}" for i in range(n_coordinates))
+            names = self.data.info.joint_coordinate_names or tuple(f"q{i}" for i in range(n_coordinates))
             if coordinate_axes is None:
                 if n_coordinates < 2:
                     raise ValueError("Joint-space plots require at least two coordinates.")
@@ -402,12 +421,12 @@ class Visualizer:
             title = "Joint space"
         mask = np.isfinite(points).all(axis=1)
         if filter_success:
-            mask &= self.data.sample_success[:, force_index]
+            mask &= self.data.results.sample_success[:, force_index]
         values, norm, colormap = None, None, None
         if field != "workspace":
             attribute, label, default_cmap, default_range = self._FIELDS[field]
-            array = getattr(self.data, attribute)
-            if array is None:
+            array = getattr(self.data.results, attribute)
+            if array.size == 0:
                 raise ValueError(f"{attribute} has not been saved/computed.")
             title = label
             if field == "dominance":
@@ -453,7 +472,7 @@ class Visualizer:
         if max_points is not None and len(indices) > max_points:
             indices = np.random.default_rng(0).choice(indices, size=max_points, replace=False)
         selected_points = points[indices]
-        force = self.data.force_samples[force_index]
+        force = self.data.samples.forces[force_index]
         title += f" | F[{force_index}]={np.array2string(force, precision=2)} N"
         if show_force and space == "cartesian" and not np.isfinite(force).all():
             raise ValueError("Cannot draw a non-finite force vector.")
@@ -468,6 +487,7 @@ class Visualizer:
             return self._simbody().show(
                 selected_points, colors, caption, force=force if show_force else None,
                 radius=radius, opacity=opacity, force_scale=force_scale, force_origin=force_origin,
+                trajectory=trajectory, reference=reference_trajectory,
             )
 
         displayed = selected_points - origin
@@ -510,6 +530,148 @@ class Visualizer:
         plt.show(block=block)
         return fig, ax
 
+    @staticmethod
+    def _trajectory_xyz(values, name):
+        values = np.asarray(values, dtype=float)
+        if values.ndim != 2:
+            raise ValueError(f"{name} must be a 2D array with Cartesian coordinates over time.")
+        if values.shape[0] == 3:
+            return values.T
+        if values.shape[1] == 3:
+            return values
+        raise ValueError(f"{name} must have shape (3, n_time) or (n_time, 3); got {values.shape}.")
+
+    def _group_indices(self, names, label):
+        names = tuple(names)
+        if not names:
+            raise ValueError(
+                f"No {label} group is configured in ModelInfo."
+            )
+        indices = []
+        for name in names:
+            if name not in self.muscle_names:
+                raise ValueError(f"Unknown muscle {name!r} in the {label} group.")
+            indices.append(self.muscle_names.index(name))
+        return names, np.asarray(indices, dtype=int)
+
+    def show_optimization(
+        self,
+        ocp_result,
+        *,
+        force_index=0,
+        fatigue_model=None,
+        fatigue_states=None,
+        initial_fatigue=None,
+        slice_axis=None,
+        slice_value=None,
+        reference_marker=None,
+        tolerance=0.01,
+        filter_success=True,
+        value_range=None,
+        cmap=None,
+        max_points=None,
+        radius=0.003,
+        opacity=0.5,
+        show_force=True,
+        force_scale=0.01,
+        force_origin=None,
+        block=True,
+    ):
+        """Show dominance samples and trajectories in Simbody, with fatigue in Matplotlib.
+
+        ``ocp_result`` may be an :class:`OCPResult` or a path to its ``.npz``
+        archive. The agonist and antagonist groups are read from ``data.info``.
+        Returns ``(number_of_map_points, fatigue_figure, fatigue_axis)``.
+        """
+        if isinstance(ocp_result, (str, Path)):
+            from .msk_data import OCPResult
+            ocp_result = OCPResult.from_npz(ocp_result)
+        if self.data is None:
+            raise ValueError("A dataset is required to display an optimization result.")
+        time = np.asarray(ocp_result.time, dtype=float)
+        if time.ndim != 1 or time.size == 0 or not np.isfinite(time).all():
+            raise ValueError("ocp_result.time must be a non-empty, finite 1D array.")
+        if np.any(np.diff(time) <= 0):
+            raise ValueError("ocp_result.time must be strictly increasing.")
+
+        endpoint = self._trajectory_xyz(ocp_result.endpoint_positions, "ocp_result.endpoint_positions")
+        if len(endpoint) != len(time):
+            raise ValueError("ocp_result.endpoint_positions and time must have the same length.")
+        reference = self._trajectory_xyz(ocp_result.reference, "ocp_result.reference")
+        if len(reference) != len(time):
+            raise ValueError("ocp_result.reference and time must have the same length.")
+
+        n_muscles = len(self.muscle_names)
+        if fatigue_states is None:
+            states = np.asarray(ocp_result.states, dtype=float)
+            joint_state_size = 2 * len(np.asarray(ocp_result.pos_indices))
+            if states.ndim == 2 and states.shape == (joint_state_size + n_muscles, len(time)):
+                fatigue_states = states[joint_state_size:, :]
+            else:
+                if fatigue_model is None:
+                    from .msk_fatiguemodel import FatigueModel
+                    fatigue_model = FatigueModel(self.data, force_index=force_index)
+                fatigue_states = fatigue_model.eval_muscle_state_trajectory(
+                    ocp_result, initial_fatigue=initial_fatigue,
+                )
+        fatigue_states = np.asarray(fatigue_states, dtype=float)
+        if fatigue_states.shape != (n_muscles, len(time)):
+            raise ValueError(
+                f"fatigue_states must have shape {(n_muscles, len(time))}; got {fatigue_states.shape}."
+            )
+        if not np.isfinite(fatigue_states).all():
+            raise ValueError("fatigue_states must contain only finite values.")
+
+        agonist_names = self.data.info.agonist_muscles
+        antagonist_names = self.data.info.antagonist_muscles
+        agonist_names, agonist_indices = self._group_indices(agonist_names, "agonist")
+        antagonist_names, antagonist_indices = self._group_indices(antagonist_names, "antagonist")
+        if set(agonist_indices).intersection(antagonist_indices):
+            raise ValueError("A muscle cannot belong to both the agonist and antagonist groups.")
+
+        fatigue_fig, fatigue_ax = plt.subplots(figsize=(7, 5))
+
+        for indices, names, color, label in (
+            (agonist_indices, agonist_names, "tab:red", "Agonists"),
+            (antagonist_indices, antagonist_names, "tab:blue", "Antagonists"),
+        ):
+            for index, name in zip(indices, names):
+                fatigue_ax.plot(time, fatigue_states[index], color=color, alpha=0.45, label=name)
+            mean_state = fatigue_states[indices].mean(axis=0)
+            fatigue_ax.plot(time, mean_state, color=color, linewidth=2.5, label=f"{label} mean")
+        fatigue_ax.set_xlabel("Time [s]")
+        fatigue_ax.set_ylabel("Fatigue state")
+        fatigue_ax.set_ylim(0, 1)
+        fatigue_ax.set_title("Agonist–antagonist fatigue progression")
+        fatigue_ax.grid(True, alpha=0.3)
+        fatigue_ax.legend(fontsize="small")
+
+        fatigue_fig.tight_layout()
+        plt.show(block=False)
+        point_count = self.show(
+            "dominance",
+            force_index=force_index,
+            backend="simbody",
+            slice_axis=slice_axis,
+            slice_value=slice_value,
+            reference_marker=reference_marker,
+            tolerance=tolerance,
+            filter_success=filter_success,
+            value_range=value_range,
+            cmap=cmap,
+            max_points=max_points,
+            radius=radius,
+            opacity=opacity,
+            show_force=show_force,
+            force_scale=force_scale,
+            force_origin=force_origin,
+            trajectory=endpoint,
+            reference_trajectory=reference,
+            block=False,
+        )
+        plt.show(block=block)
+        return point_count, fatigue_fig, fatigue_ax
+
     def show_activation(self, muscle, force_index=0, **kwargs):
         return self.show("activation", muscle=muscle, force_index=force_index, **kwargs)
 
@@ -531,6 +693,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("npz_path", type=Path)
+    parser.add_argument("--ocp-result", type=Path,
+                        help="OCP result archive; overlays its trajectory on the dominance map")
     parser.add_argument("--model", "--model_path", dest="model_path", type=Path,
                         help="Matching .osim file (required for Simbody)")
     parser.add_argument("--field", choices=["workspace", *Visualizer._FIELDS], default="dominance")
@@ -547,7 +711,7 @@ if __name__ == "__main__":
     parser.add_argument("--tolerance", type=float, default=0.01)
     parser.add_argument("--max-points", type=int, help="Optional display-only subsampling")
     parser.add_argument("--radius", type=float, default=0.006, help="Simbody point radius in metres")
-    parser.add_argument("--opacity", type=float, default=1.0, help="Point opacity in the range [0, 1]")
+    parser.add_argument("--opacity", type=float, help="Point opacity in the range [0, 1]")
     args = parser.parse_args()
     viewer = Visualizer.from_npz(args.npz_path, model_path=args.model_path)
     slice_coordinate = args.slice_coordinate
@@ -562,11 +726,27 @@ if __name__ == "__main__":
             muscle = int(muscle)
         except ValueError:
             pass
-    viewer.show(args.field, muscle=muscle, force_index=args.force, backend=args.backend,
-                space=args.space, coordinate_axes=args.coordinate_axes,
-                slice_coordinate=slice_coordinate,
-                slice_axis=args.slice_axis, slice_value=args.slice_value, tolerance=args.tolerance,
-                reference_marker=args.reference_marker, max_points=args.max_points,
-                radius=args.radius, opacity=args.opacity)
-    if args.backend == "simbody":
+    if args.ocp_result is not None:
+        if args.model_path is None:
+            parser.error("--model is required with --ocp-result for the Simbody view")
+        viewer.show_optimization(
+            args.ocp_result,
+            force_index=args.force,
+            slice_axis=args.slice_axis,
+            slice_value=args.slice_value,
+            tolerance=args.tolerance,
+            reference_marker=args.reference_marker,
+            max_points=args.max_points,
+            radius=args.radius,
+            opacity=0.5 if args.opacity is None else args.opacity,
+        )
+    else:
+        viewer.show(args.field, muscle=muscle, force_index=args.force, backend=args.backend,
+                    space=args.space, coordinate_axes=args.coordinate_axes,
+                    slice_coordinate=slice_coordinate,
+                    slice_axis=args.slice_axis, slice_value=args.slice_value, tolerance=args.tolerance,
+                    reference_marker=args.reference_marker, max_points=args.max_points,
+                    radius=args.radius,
+                    opacity=1.0 if args.opacity is None else args.opacity)
+    if args.backend == "simbody" or args.ocp_result is not None:
         input("Press Enter to close the viewer...")

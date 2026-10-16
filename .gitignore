@@ -4,5 +4,14 @@ tests/
 
 /results/*
 !/results/tsm_4DOF/
-/results/tsm_4DOF/*
-!/results/tsm_4DOF/p1e4_m1_d1_fx-20_fy0_fz0.npz
+/results/tsm_4DOF/datasets/*
+!/results/tsm_4DOF/datasets/msk_dataset_p1e4_m1_d1_fx-20_fy0_fz0.npz
+
+!/results/arm26_3DOF/
+/results/arm26_3DOF/*
+!/results/arm26_3DOF/datasets/
+/results/arm26_3DOF/datasets/*
+!/results/arm26_3DOF/datasets/msk_dataset_p1e5_m1_d1_fx-20_fy0_fz0.npz
+!/results/arm26_3DOF/ocp/
+/results/arm26_3DOF/ocp/*
+!/results/arm26_3DOF/ocp/results_20261016_154356.npz
