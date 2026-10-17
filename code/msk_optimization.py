@@ -178,55 +178,91 @@ class MusculoskeletalOCP:
         filename = dir / f"{tag}.npz"
         return self.ocp_result.save_npz(filename)
 
-if __name__ == "__main__":
-    root = Path(__file__).parent.parent
 
-    model_name = "arm26_3DOF"
-    model_dir = root / "musculoskeletal_models" / f"{model_name}"
-    dataset_dir = root / "results" / f"{model_name}" / "datasets"
-    npz_name = "msk_dataset_p1e5_m1_d1_fx-20_fy0_fz0.npz"
-    model = osim.Model(str(model_dir / f"{model_name}.osim"))
+MODEL_CONFIG = {
+    "arm26_3DOF": {
+        "model_path": "musculoskeletal_models/arm26_3DOF/arm26_3DOF.osim",
+        "dataset_npz_path": "results/arm26_3DOF/datasets/msk_dataset_p1e5_m1_d1_fx-20_fy0_fz0.npz",
+        "dynamics_func_path": "musculoskeletal_models/arm26_3DOF/fd_dynamics/F.casadi",
+        "ocp_result_npz_path": "results/arm26_3DOF/ocp/results/20261017_140446.npz",
+    },
+    "arm26_4DOF": {
+        "model_path": "musculoskeletal_models/arm26_4DOF/arm26_4DOF.osim",
+        "dataset_npz_path": "results/arm26_4DOF/datasets/msk_dataset_p1e5_m1_d1_fx-20_fy0_fz0.npz",
+        "dynamics_func_path": "musculoskeletal_models/arm26_4DOF/fd_dynamics/F.casadi",
+        "ocp_result_npz_path": "results/arm26_4DOF/ocp/results/20261017_112917.npz",
 
-    horizon = 100
-    timestep = 0.1
-    time = np.arange(horizon) * timestep
+    },
+    "tsm_4DOF": {   # opensimAD does not support a joint in the TSM model
+        "model_path": "musculoskeletal_models/tsm_4DOF/tsm_4DOF.osim",
+        "dataset_npz_path": "results/tsm_4DOF/datasets/msk_dataset_p1e5_m1_d1_fx-20_fy0_fz0.npz",
+    },
+}
 
-    reference = np.vstack((
-        0.3 * np.ones(horizon),
-        0.6 * np.ones(horizon),
-        0.2 + 0.3 * np.sin(2.0 * np.pi * time / 10.0),
-    ))
 
-    fatigue = FatigueModel.from_npz(dataset_dir / npz_name)
+def solve_ocp(model_name: str, force_index: int = 0, reference=None, horizon=100, timestep=0.1, save_motion=False):
+    fatigue_model = FatigueModel.from_npz(MODEL_CONFIG[model_name]["dataset_npz_path"], force_index=force_index)
+
+    import opensim as osim
+    model = osim.Model(MODEL_CONFIG[model_name]["model_path"])
+
+    if reference is None:
+        time = np.arange(horizon) * timestep
+        reference = np.vstack((
+            0.3 * np.ones(horizon),
+            0.6 * np.ones(horizon),
+            0.2 + 0.3 * np.sin(2.0 * np.pi * time / 10.0),
+        ))
 
     ocp = MusculoskeletalOCP.from_model(
         model=model,
-        dynamics_func=model_dir / "fd_dynamics" / "F.casadi",
-        fatigue=fatigue,
+        dynamics_func=MODEL_CONFIG[model_name]["dynamics_func_path"],
+        fatigue=fatigue_model,
         reference=reference,
         horizon=horizon,
         timestep=timestep,
     )
 
     result = ocp.solve()
-
     ocp.save_result(model_name=model_name)
 
+    if save_motion:
+        visualizer = Visualizer(model)
+        root = Path(__file__).parent.parent
+        filename = f"{model.getName()}_{datetime.now():%Y%m%d_%H%M%S}.sto"
+        motion_file = visualizer.save_motion_sto(
+            root / "results" / f"{model.getName()}/motions/{filename}",
+            result.time,
+            result.states[:ocp.joint_states.size, :],
+        )
 
-    visualizer = Visualizer(model)
+    
+    return result
 
-    viewer = Visualizer(model=model, data=fatigue.data)
+def visualize_ocp_result(model_name: str, ocp_result_path: str, *, block=True):
+    import opensim as osim
+    model = osim.Model(MODEL_CONFIG[model_name]["model_path"])
+    ocp_result = OCPResult.from_npz(ocp_result_path)
 
-    n_map_points, fatigue_fig, fatigue_ax = viewer.show_optimization(
-        result,
-        force_index=fatigue.force_index,
+    fatigue_model = FatigueModel.from_npz(MODEL_CONFIG[model_name]["dataset_npz_path"])
+    visualizer = Visualizer(model, data=fatigue_model.data)
+    visualizer.visualize_ocp_result(
+        ocp_result,
+        slice_axis="y",
+        slice_value=-0.25,
+        reference_marker="r_acromion",
+        tolerance=0.05,
+        opacity=0.9,
+        radius=0.008,
+        block=block,
     )
 
 
-    filename = f"{model.getName()}_{datetime.now():%Y%m%d_%H%M%S}.sto"
-    motion_file = visualizer.save_motion_sto(
-        root / "results" / f"{model.getName()}/motions/{filename}",
-        result.time,
-        result.states[:ocp.joint_states.size, :],
-    )
+if __name__ == "__main__":
 
+    model_name = "arm26_3DOF"
+
+    solve_ocp(model_name, force_index=0, horizon=100, timestep=0.1, save_motion=True)
+
+    #ocp_result_path = MODEL_CONFIG[model_name]["ocp_result_npz_path"]
+    #visualize_ocp_result(model_name, ocp_result_path)

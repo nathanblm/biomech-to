@@ -571,7 +571,7 @@ class Visualizer:
             raise ValueError("muscles must not contain duplicate selections.")
         return indices
 
-    def show_optimization(
+    def visualize_ocp_result(
         self,
         ocp_result,
         *,
@@ -854,7 +854,7 @@ if __name__ == "__main__":
     if args.ocp_result is not None:
         if args.model_path is None:
             parser.error("--model is required with --ocp-result for the Simbody view")
-        viewer.show_optimization(
+        viewer.visualize_ocp_result(
             args.ocp_result,
             force_index=args.force,
             muscles=muscles,

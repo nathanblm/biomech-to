@@ -424,6 +424,25 @@ def build_msk_dataset(model_name: str, *, n_samples=100000, n_magnitudes=1, n_di
     config = MODEL_CONFIG.get(model_name)
 
     model_path = Path(config["model_path"])
+
+    # Reuse the explicitly configured single-force dataset if it is already saved.
+    if magnitudes is not None and directions is not None:
+        configured_magnitudes = np.asarray(magnitudes, dtype=float).reshape(-1)
+        configured_directions = np.asarray(directions, dtype=float).reshape(-1, 3)
+        if len(configured_magnitudes) == len(configured_directions) == 1:
+            direction = configured_directions[0]
+            force = configured_magnitudes[0] * direction / np.linalg.norm(direction)
+            force_tag = _force_label(force)
+            dataset_path = (
+                Path(__file__).resolve().parent.parent
+                / "results" / model_name / "datasets"
+                / f"msk_dataset_p{_scientific_int(n_samples)}_m1_d1_{force_tag}.npz"
+            )
+            if dataset_path.exists():
+                MSKdataset.from_npz(dataset_path)
+                print(f"Loading existing dataset: {dataset_path}")
+                return dataset_path
+
     model = osim.Model(str(model_path))
 
     msk_builder = MusculoskeletalDatasetBuilder.from_model(
@@ -446,7 +465,7 @@ def build_msk_dataset(model_name: str, *, n_samples=100000, n_magnitudes=1, n_di
     )
     msk_builder.compute_sample_fatigue_rates()
     msk_builder.compute_sample_fatigue_dominance()
-    msk_builder.save_msk_dataset()
+    return msk_builder.save_msk_dataset()
 
 def build_validation_dataset(model_name: str, dataset_npz_path: str, ocp_result_npz_path, *, force_index=0, activation_dynamics=True, filter_succes=True):
     config = MODEL_CONFIG.get(model_name)
@@ -489,8 +508,8 @@ def dataset_demo(model_name: str, npz_path: str, *, endpoint_marker="endpoint"):
         endpoint_marker=endpoint_marker,
     )
 
-    # Choose a muscle by name; use any entry in visualizer.muscle_names.
-    muscle_name = "BIC_long"
+    # Pick a configured agonist by name; it must be present in the saved model data.
+    muscle_name = config["agonists"][0]
     if muscle_name not in visualizer.muscle_names:
         raise ValueError(
             f"Unknown muscle {muscle_name!r}. Available muscles: {visualizer.muscle_names}"
@@ -516,10 +535,10 @@ def dataset_demo(model_name: str, npz_path: str, *, endpoint_marker="endpoint"):
         slice_value=-0.1,
         reference_marker=ref_marker,
         tolerance=0.2,
+        opacity=0.9,
+        radius=0.008,
         #max_points=5000,
     )
-
-    input("Press Enter to exit the demo...")
 
 
 if __name__ == "__main__":
