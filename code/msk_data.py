@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
@@ -166,6 +167,68 @@ class FatigueParameters:
         return params
 
 @dataclass
+class RMRconfig:
+    muscle_weights: np.ndarray
+    reserve_actuator_weights: np.ndarray
+    weights: np.ndarray
+
+    @classmethod
+    def from_model_info(cls, model_info: ModelInfo, *, reserve_actuator_weight=1.0, muscle_weight=1.0):
+        n_muscles = len(model_info.muscle_names)
+        n_reserve_actuators = len(model_info.actuator_names) - n_muscles
+
+        muscle_weights = np.full(n_muscles, muscle_weight)
+        reserve_actuator_weights = np.full(n_reserve_actuators, reserve_actuator_weight)
+        weights = np.concatenate((muscle_weights, reserve_actuator_weights))
+
+        return cls(
+            muscle_weights=muscle_weights,
+            reserve_actuator_weights=reserve_actuator_weights,
+            weights=weights
+        )
+
+@dataclass
+class FatigueValidationData:
+    tag: str
+    force_index: int        # currently only supports nearest-neighbor lookup for joint coordinates.
+
+    time: np.ndarray
+    joint_positions: np.ndarray
+    endpoint_forces: np.ndarray
+    
+
+    muscle_forces: np.ndarray
+    fatigue_rates: np.ndarray
+    success: np.ndarray
+    muscle_states: Optional[np.ndarray] = None
+
+    @classmethod
+    def empty(cls, n_muscles):
+        return cls(
+            tag="",
+            force_index=0,
+            time=np.empty((0,)),
+            joint_positions=np.empty((0, 0)),
+            endpoint_forces=np.empty((0, 3)),
+            muscle_forces=np.empty((0, n_muscles)),
+            fatigue_rates=np.empty((0, n_muscles)),
+            success=np.empty((0,), dtype=bool),
+            muscle_states=None
+        )
+
+    @classmethod
+    def from_npz(cls, path):
+        """Load a trusted archive containing a FatigueValidationData object."""
+        with np.load(path, allow_pickle=True) as archive:
+            return archive["data"].item()
+
+    def save_npz(self, path):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(path, data=self)
+        return path
+
+@dataclass
 class MSKdataset:
     info: ModelInfo
     samples: SampleInputs
@@ -194,6 +257,7 @@ class OCPResult:
     endpoint_positions: np.ndarray          # (n_endpoint_dims, n_time_points)
     reference: np.ndarray                   # (n_endpoint_dims, n_time_points)
     objective: float
+    tag: str = ""
 
     @classmethod
     def from_npz(cls, path):

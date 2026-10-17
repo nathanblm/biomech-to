@@ -165,15 +165,17 @@ class MusculoskeletalOCP:
 
         return self.ocp_result
 
-    def save_result(self, model_name: str, *, dir=None):
+    def save_result(self, model_name: str, *, dir=None, tag=None):
         if dir is None:
             ROOT = Path(__file__).parent.parent
-            dir = ROOT / "results" / model_name / "ocp"
+            dir = ROOT / "results" / model_name / "ocp" / "results"
         dir = Path(dir)
         dir.mkdir(parents=True, exist_ok=True)
+        if tag is None:
+            tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.ocp_result.tag = tag
 
-        filename = dir / f"results_{datetime.now():%Y%m%d_%H%M%S}.npz"
-
+        filename = dir / f"{tag}.npz"
         return self.ocp_result.save_npz(filename)
 
 if __name__ == "__main__":

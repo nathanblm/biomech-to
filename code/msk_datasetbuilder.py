@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 import numpy as np
 import opensim as osim
@@ -8,7 +9,8 @@ from itertools import islice
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from rmr_solver import RMRsolver, ActSquared
 from .visualizer import Visualizer
-from .msk_data import ModelInfo, SampleInputs, SampleResults, FatigueParameters, MSKdataset
+from .msk_data import ModelInfo, OCPResult, SampleInputs, SampleResults, FatigueParameters, \
+      MSKdataset, RMRconfig, FatigueValidationData
 
 osim.Logger.setLevelString("Error")
 
@@ -17,7 +19,7 @@ _worker_context = None
 _worker_output = None
 
 
-def _init_worker(model_path, model_info, activation_dynamics=False):
+def _init_worker(model_path, model_info, config, activation_dynamics=False):
     global _worker_context, _worker_output
 
     osim.Logger.setLevelString("Error")
@@ -26,6 +28,7 @@ def _init_worker(model_path, model_info, activation_dynamics=False):
     _worker_context = RMRWorkerContext(
         model=model,
         model_info=model_info,
+        config=config,
         activation_dynamics=activation_dynamics,
     )
 
@@ -40,10 +43,12 @@ def _force_label(force):
     x, y, z = force
     return f"fx{x:g}_fy{y:g}_fz{z:g}"
 
+
 class RMRWorkerContext:
-    def __init__(self, model, model_info, activation_dynamics=False):
+    def __init__(self, model, model_info, config, activation_dynamics=False):
         self.model = model
         self.model_info = model_info
+        self.config = config
 
         self.solver = RMRsolver(
             model=model,
@@ -52,12 +57,7 @@ class RMRWorkerContext:
             prescribedForceIndex=self.model_info.prescribed_force_indices,
         )
 
-        # equal weights for all muscles and reserve actuators
-        self.muscle_weights = np.ones(len(model_info.muscle_names))
-        self.reserve_actuator_weights = np.ones(len(model_info.actuator_names) - len(model_info.muscle_names))
-        self.weights = np.concatenate([self.muscle_weights, self.reserve_actuator_weights])
-
-        self.solver.setObjective(ActSquared(self.weights))
+        self.solver.setObjective(ActSquared(self.config.weights))
 
         if tuple(self.solver.coordinateFreeNames) != self.model_info.joint_coordinate_names:
             raise ValueError("Solver and ModelInfo coordinate orders differ.")
@@ -92,22 +92,27 @@ class RMRWorkerContext:
             info["success"],
         )
 
+
 class MusculoskeletalDatasetBuilder:
-    def __init__(self, model, info: ModelInfo, *, model_path=None):
+    def __init__(self, model, info: ModelInfo, config: RMRconfig, fatique_params: FatigueParameters, *, model_path=None):
         self.model = model
         self.info = info
+        self.config = config
+        self.fatigue_params = fatique_params
+        
         self.model_path = Path(model_path).resolve() if model_path is not None else None
         self.state = model.initSystem()
         
-        self.fatigue_params = FatigueParameters.from_max_forces(self.info.muscle_max_forces)
-
         self.inputs = SampleInputs.empty(n_joint_coordinates=len(info.joint_coordinate_names))
         self.results = SampleResults.empty()
+        self.validation = FatigueValidationData.empty(n_muscles=len(info.muscle_names))
 
     @classmethod
     def from_model(cls, model, *, model_path=None, agonists=(), antagonists=()):
         info = ModelInfo.from_model(model, agonists=agonists, antagonists=antagonists)
-        builder = cls(model, info, model_path=model_path)
+        config = RMRconfig.from_model_info(info)
+        fatigue_params = FatigueParameters.from_max_forces(info.muscle_max_forces)
+        builder = cls(model, info, config, fatigue_params, model_path=model_path)
         return builder
 
     @classmethod
@@ -228,7 +233,7 @@ class MusculoskeletalDatasetBuilder:
             max_workers=workers,
             mp_context=mp.get_context("spawn"),
             initializer=_init_worker,
-            initargs=(str(self.model_path), self.info, activation_dynamics),
+            initargs=(str(self.model_path), self.info, self.config, activation_dynamics),
         ) as pool, tqdm(total=total_tasks, desc="RMR solves", unit="solve") as progress:
             pending = {
                 pool.submit(_solve_task, task)
@@ -325,69 +330,217 @@ class MusculoskeletalDatasetBuilder:
             endpoint_marker=endpoint_marker,
         )   
 
-def main():
-    from opensim import Model
+    def generate_validation_data(self, ocp_result, *, force_index=0, activation_dynamics=True, filter_succes=True):
 
-    ROOT = Path(__file__).parent.parent
-    model_path = ROOT / "musculoskeletal_models" / "arm26_3DOF" / "arm26_3DOF.osim"
-    #npz_path = ROOT / "results" / "ts_model_4DOF" / "p1e3_m1_d1.npz"
-    agonists = ["TRImed", "TRIlat", "TRIlong"]
-    antagonists = ["BICshort", "BIClong", "BRA"]
+        solver = RMRsolver(
+            self.model, 
+            visualize=True,
+            constrainActDyn=activation_dynamics,
+            prescribedForceIndex=self.info.prescribed_force_indices,
+            )     
 
-    #model_path = ROOT / "musculoskeletal_models" / "tsm_4DOF" / "tsm_4DOF.osim"
-    #agonists = ["BIC_long", "BIC_brevis"]
-    #antagonists = ["TRIlong"]
+        solver.setObjective(ActSquared(self.config.weights))
 
-    model = Model(str(model_path))
+        positions = ocp_result.states[ocp_result.pos_indices, :-1].T
+        speeds = ocp_result.states[ocp_result.pos_indices + 1, :-1].T
+        accelerations = ocp_result.controls.T
+        N = positions.shape[0]
 
-    #mm_builder = MusculoskeletalDatasetBuilder.from_npz(model, npz_path, model_path=model_path)
+        f = self.inputs.forces[force_index]
+        f_N = np.broadcast_to(f, (N, f.size))
 
-    mm_builder = MusculoskeletalDatasetBuilder.from_model(
-        model, 
-        model_path=model_path, 
-        agonists=agonists, 
-        antagonists=antagonists
+        val_muscle_forces = np.empty((N, len(self.info.muscle_names)))
+        val_rates = np.empty((N, len(self.info.muscle_names)))
+        val_succes = np.empty(N, dtype=bool)
+
+        for i in range(N):
+            time = i * ocp_result.time[1]  # assumes uniform time steps
+            _, _, val_muscle_forces[i], info = solver.solve(
+                time=time,
+                position=positions[i],
+                speed=speeds[i],
+                acceleration=accelerations[i],
+                values_prescribed_forces=np.r_[f_N[i], np.zeros(3)],
+            )
+
+            val_succes[i] = info["success"]
+
+        if filter_succes:
+            val_muscle_forces = val_muscle_forces[val_succes]
+
+        rates = val_muscle_forces / self.fatigue_params.capacity[None, :]
+
+        self.validation = FatigueValidationData(
+            tag=ocp_result.tag,
+            force_index=force_index,
+            time=ocp_result.time,
+            joint_positions=ocp_result.states[ocp_result.pos_indices, :],
+            endpoint_forces=np.broadcast_to(f, (N, f.size)),
+            muscle_forces=val_muscle_forces,
+            fatigue_rates=rates,
+            success=val_succes
+        )
+
+        return self.validation
+
+    def save_validation_data(self, *, dir=None):
+        if dir is None:
+            ROOT = Path(__file__).parent.parent
+            dir = ROOT / "results" / self.model.getName() / "ocp" / "validation"
+
+        dir = Path(dir)
+        dir.mkdir(parents=True, exist_ok=True)
+
+
+        filename = f"{self.validation.tag}.npz"
+        output_path = dir / filename
+
+        return self.validation.save_npz(output_path)
+
+
+MODEL_CONFIG = {
+    "arm26_3DOF": {
+        "model_path": "musculoskeletal_models/arm26_3DOF/arm26_3DOF.osim",
+        "agonists": ["TRImed", "TRIlat", "TRIlong"],
+        "antagonists": ["BICshort", "BIClong", "BRA"],
+        "reference_marker": "r_acromion",
+    },
+    "arm26_4DOF": {
+        "model_path": "musculoskeletal_models/arm26_4DOF/arm26_4DOF.osim",
+        "agonists": ["TRImed", "TRIlat", "TRIlong"],
+        "antagonists": ["BICshort", "BIClong", "BRA"],
+        "reference_marker": "r_acromion",
+    },
+    "tsm_4DOF": {
+        "model_path": "musculoskeletal_models/tsm_4DOF/tsm_4DOF.osim",
+        "agonists": ["BIC_long", "BIC_brevis"],
+        "antagonists": ["TRIlong"],
+        "reference_marker": "ac",
+    },
+}
+
+
+def build_msk_dataset(model_name: str, *, n_samples=100000, n_magnitudes=1, n_directions=1, magnitude_min=20.0, magnitude_max=30.0, magnitudes=None, directions=None):
+    config = MODEL_CONFIG.get(model_name)
+
+    model_path = Path(config["model_path"])
+    model = osim.Model(str(model_path))
+
+    msk_builder = MusculoskeletalDatasetBuilder.from_model(
+        model,
+        model_path=model_path,
+        agonists=config["agonists"],
+        antagonists=config["antagonists"],
     )
 
-    mm_builder.generate_position_samples(n_samples=100000)
+    msk_builder.generate_position_samples(n_samples=n_samples)
+    msk_builder.generate_force_samples(
+        magnitudes=magnitudes,
+        directions=directions,
+        n_magnitudes=n_magnitudes,
+        n_directions=n_directions,
+    )
+    msk_builder.evaluate_sample_activations_and_muscle_forces(
+        workers=mp.cpu_count(),
+        activation_dynamics=False,
+    )
+    msk_builder.compute_sample_fatigue_rates()
+    msk_builder.compute_sample_fatigue_dominance()
+    msk_builder.save_msk_dataset()
 
-    one_direction = np.array([[-1.0, 0.0, 0.0]])
-    one_magnitude = np.array([20.0])
+def build_validation_dataset(model_name: str, dataset_npz_path: str, ocp_result_npz_path, *, force_index=0, activation_dynamics=True, filter_succes=True):
+    config = MODEL_CONFIG.get(model_name)
 
-    #n_magnitudes = 1
-    #n_directions = 3
+    model_path = Path(config["model_path"])
+    model = osim.Model(str(model_path))
 
-    mm_builder.generate_force_samples(
-        magnitudes=one_magnitude,
-        directions=one_direction,
-        #n_magnitudes=n_magnitudes,
-        #n_directions=n_directions,
+    msk_builder = MusculoskeletalDatasetBuilder.from_npz(
+        model,
+        npz_path=dataset_npz_path,
+        model_path=model_path,
     )
 
-    mm_builder.evaluate_sample_activations_and_muscle_forces(
-        workers=12,
-        activation_dynamics=False
+    from .msk_data import OCPResult
+    ocp_result = OCPResult.from_npz(ocp_result_npz_path)
+
+    msk_builder.generate_validation_data(
+        ocp_result,
+        force_index=force_index,
+        activation_dynamics=activation_dynamics,
+        filter_succes=filter_succes,
+    )
+    msk_builder.save_validation_data()
+
+def dataset_demo(model_name: str, npz_path: str, *, endpoint_marker="endpoint"):
+    config = MODEL_CONFIG.get(model_name)
+
+    model_path = Path(config["model_path"])
+    model = osim.Model(str(model_path))
+    ref_marker = config["reference_marker"]
+
+    msk_builder = MusculoskeletalDatasetBuilder.from_npz(
+        model,
+        npz_path=npz_path,
+        model_path=model_path,
     )
 
-    mm_builder.compute_sample_fatigue_rates()
+    visualizer = msk_builder.create_visualizer(
+        npz_path=npz_path,
+        endpoint_marker=endpoint_marker,
+    )
 
-    mm_builder.compute_sample_fatigue_dominance()
+    # Choose a muscle by name; use any entry in visualizer.muscle_names.
+    muscle_name = "BIC_long"
+    if muscle_name not in visualizer.muscle_names:
+        raise ValueError(
+            f"Unknown muscle {muscle_name!r}. Available muscles: {visualizer.muscle_names}"
+        )
+    muscle = muscle_name
+    for field in ("activation", "muscle_force"):
+        visualizer.show(
+            field,
+            muscle=muscle,
+            force_index=0,
+            backend="matplotlib",
+            space="cartesian",
+            block=False,
+        )
 
-    mm_builder.save_msk_dataset()
 
-    #viewer = mm_builder.create_visualizer(npz_path)
+    visualizer.show(
+        "dominance",
+        force_index=0,
+        backend="simbody",
+        space="cartesian",
+        slice_axis="y",
+        slice_value=-0.1,
+        reference_marker=ref_marker,
+        tolerance=0.2,
+        #max_points=5000,
+    )
 
-    #viewer.show_dominance(
-    #    force_index=0,
-    #    backend="simbody",
-    #    slice_axis="y",
-    #    slice_value=-0.1,
-    #    reference_marker="r_acromion",
-    #    tolerance=0.05,
-    #    radius=0.006,
-    #    opacity=1.0,
-    #)
+    input("Press Enter to exit the demo...")
 
 
 if __name__ == "__main__":
-    main()
+    #dataset_demo("tsm_4DOF", "results/tsm_4DOF/datasets/msk_dataset_p1e4_m1_d1_fx-20_fy0_fz0.npz")
+    
+    #build_msk_dataset(
+    #    "arm26_3DOF", 
+    #    n_samples=100, 
+    #    n_magnitudes=1, 
+    #    n_directions=1, 
+    #    magnitude_min=20.0, 
+    #    magnitude_max=20.0,
+    #    magnitudes=None,
+    #    directions=None
+    #)
+
+    build_validation_dataset(
+        "arm26_3DOF",
+        dataset_npz_path="results/arm26_3DOF/datasets/msk_dataset_p1e5_m1_d1_fx-20_fy0_fz0.npz",
+        ocp_result_npz_path="results/arm26_3DOF/ocp/results/20261017_140446.npz",
+        force_index=0,
+        activation_dynamics=True,
+        filter_succes=True,
+    )

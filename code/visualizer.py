@@ -701,6 +701,96 @@ class Visualizer:
         plt.show(block=block)
         return point_count, fatigue_fig, fatigue_ax
 
+    def compare_muscle_state_trajectories(
+        self,
+        ocp_result,
+        validation_data,
+        *,
+        muscles=None,
+        block=True,
+    ):
+        """Plot OCP map-based fatigue states against RMR validation states.
+
+        Both state arrays are expected in ``(n_muscles, n_times)`` order;
+        each selected muscle gets its own subplot.
+        """
+        if not self.muscle_names:
+            raise ValueError("Muscle names are required to compare fatigue trajectories.")
+
+        ocp_time = np.asarray(ocp_result.time, dtype=float)
+        validation_time = np.asarray(validation_data.time, dtype=float)
+        states = np.asarray(ocp_result.states, dtype=float)
+        validation_states = getattr(validation_data, "muscle_states", None)
+        if validation_states is None:
+            raise ValueError("validation_data.muscle_states must be computed before plotting.")
+        validation_states = np.asarray(validation_states, dtype=float)
+
+        n_muscles = len(self.muscle_names)
+        if ocp_time.ndim != 1 or validation_time.ndim != 1:
+            raise ValueError("OCP and validation times must be 1D arrays.")
+        if states.ndim != 2 or states.shape[0] < n_muscles:
+            raise ValueError("ocp_result.states must be a 2D state-by-time array.")
+        ocp_muscle_states = states[-n_muscles:, :]
+        if ocp_muscle_states.shape != (n_muscles, len(ocp_time)):
+            raise ValueError(
+                "The muscle-state portion of ocp_result.states must have shape "
+                f"{(n_muscles, len(ocp_time))}; got {ocp_muscle_states.shape}."
+            )
+        if validation_states.shape != (n_muscles, len(validation_time)):
+            raise ValueError(
+                "validation_data.muscle_states must have shape "
+                f"{(n_muscles, len(validation_time))}; got {validation_states.shape}."
+            )
+        if not np.isfinite(ocp_time).all() or not np.isfinite(validation_time).all():
+            raise ValueError("OCP and validation times must contain only finite values.")
+        if np.any(np.diff(ocp_time) <= 0) or np.any(np.diff(validation_time) <= 0):
+            raise ValueError("OCP and validation times must be strictly increasing.")
+        if not np.isfinite(ocp_muscle_states).all() or not np.isfinite(validation_states).all():
+            raise ValueError("Muscle-state trajectories must contain only finite values.")
+
+        selected = self._selected_muscle_indices(muscles)
+        if not selected:
+            raise ValueError("Select at least one muscle to compare.")
+
+        columns = min(3, len(selected))
+        rows = int(np.ceil(len(selected) / columns))
+        fig, axes = plt.subplots(
+            rows,
+            columns,
+            figsize=(5 * columns, 3.2 * rows),
+            squeeze=False,
+        )
+        flat_axes = axes.ravel()
+        for axis, index in zip(flat_axes, selected):
+            line, = axis.plot(
+                ocp_time,
+                ocp_muscle_states[index],
+                label="OCP (map fatigue rates)",
+                linewidth=2,
+            )
+            axis.plot(
+                validation_time,
+                validation_states[index],
+                linestyle="--",
+                color=line.get_color(),
+                label="RMR validation",
+                linewidth=2,
+            )
+            axis.set_title(self.muscle_names[index])
+            axis.set_xlabel("Time [s]")
+            axis.set_ylabel("Muscle state")
+            axis.set_ylim(0, 1)
+            axis.grid(True, alpha=0.3)
+            axis.legend(fontsize="small")
+
+        for axis in flat_axes[len(selected):]:
+            axis.set_visible(False)
+
+        fig.suptitle("OCP and RMR muscle-state trajectories")
+        fig.tight_layout()
+        plt.show(block=block)
+        return fig, axes
+
     def show_activation(self, muscle, force_index=0, **kwargs):
         return self.show("activation", muscle=muscle, force_index=force_index, **kwargs)
 
