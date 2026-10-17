@@ -11,53 +11,7 @@ from .visualizer import Visualizer
 from .msk_fatiguemodel import FatigueModel
 from .msk_data import ModelInfo, OCPResult
 
-@dataclass
-class JointStates:
-    names: tuple[str, ...]                  # len(n_coordinates)
-    positions: np.ndarray                   # (n_coordinates,)
-    position_limits: np.ndarray             # (n_coordinates, 2)
-    velocities: np.ndarray                  # (n_coordinates,)
-    accelerations: np.ndarray               # (n_coordinates,)
-
-    @classmethod
-    def from_model(cls, model):
-        info = ModelInfo.from_model(model)
-
-        return cls(
-            names=info.joint_coordinate_names,
-            positions=np.zeros(len(info.joint_coordinate_names)),
-            position_limits=info.joint_coordinate_limits,
-            velocities=np.zeros(len(info.joint_coordinate_names)),
-            accelerations=np.zeros(len(info.joint_coordinate_names)),
-        )
-
-    @property
-    def size(self) -> int:
-        return self.positions.size + self.velocities.size
-
-    @property
-    def x(self) -> np.ndarray:
-        return np.column_stack((self.positions, self.velocities)).ravel()
-
-@dataclass
-class MuscleStates:
-    names: tuple[str, ...]                  # len(n_muscles)
-    fatigue: np.ndarray                     # (n_muscles,)
-    max_forces: np.ndarray                  # (n_muscles,)
-
-    @classmethod
-    def from_model(cls, model):
-        info = ModelInfo.from_model(model)
-
-        return cls(
-            names=info.muscle_names,
-            fatigue=np.zeros(len(info.muscle_names)),
-            max_forces=info.muscle_max_forces,
-        )
-
-    @property
-    def size(self) -> int:
-        return len(self.names)
+from .msk_data import JointStates, MuscleStates
 
 @dataclass
 class OCPconfig:
