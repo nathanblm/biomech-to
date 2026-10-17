@@ -554,6 +554,23 @@ class Visualizer:
             indices.append(self.muscle_names.index(name))
         return names, np.asarray(indices, dtype=int)
 
+    def _selected_muscle_indices(self, muscles):
+        """Resolve a muscle selection, defaulting to every saved muscle."""
+        if muscles is None:
+            requested = range(len(self.muscle_names))
+        elif isinstance(muscles, (str, int, np.integer)):
+            requested = (muscles,)
+        else:
+            try:
+                requested = tuple(muscles)
+            except TypeError as error:
+                raise ValueError("muscles must be a name/index or an iterable of names/indices.") from error
+
+        indices = [self._muscle_index(muscle) for muscle in requested]
+        if len(set(indices)) != len(indices):
+            raise ValueError("muscles must not contain duplicate selections.")
+        return indices
+
     def show_optimization(
         self,
         ocp_result,
@@ -562,6 +579,8 @@ class Visualizer:
         fatigue_model=None,
         fatigue_states=None,
         initial_fatigue=None,
+        muscles=None,
+        show_agonist_antagonist=False,
         slice_axis=None,
         slice_value=None,
         reference_marker=None,
@@ -580,7 +599,9 @@ class Visualizer:
         """Show dominance samples and trajectories in Simbody, with fatigue in Matplotlib.
 
         ``ocp_result`` may be an :class:`OCPResult` or a path to its ``.npz``
-        archive. The agonist and antagonist groups are read from ``data.info``.
+        archive. ``muscles`` selects fatigue traces by name or index; it defaults
+        to all muscles. Set ``show_agonist_antagonist`` to overlay configured
+        agonist/antagonist group means.
         Returns ``(number_of_map_points, fatigue_figure, fatigue_axis)``.
         """
         if isinstance(ocp_result, (str, Path)):
@@ -622,27 +643,35 @@ class Visualizer:
         if not np.isfinite(fatigue_states).all():
             raise ValueError("fatigue_states must contain only finite values.")
 
-        agonist_names = self.data.info.agonist_muscles
-        antagonist_names = self.data.info.antagonist_muscles
-        agonist_names, agonist_indices = self._group_indices(agonist_names, "agonist")
-        antagonist_names, antagonist_indices = self._group_indices(antagonist_names, "antagonist")
-        if set(agonist_indices).intersection(antagonist_indices):
-            raise ValueError("A muscle cannot belong to both the agonist and antagonist groups.")
-
+        selected_indices = self._selected_muscle_indices(muscles)
+        group_colors = {}
+        if show_agonist_antagonist:
+            agonist_names, agonist_indices = self._group_indices(self.data.info.agonist_muscles, "agonist")
+            antagonist_names, antagonist_indices = self._group_indices(self.data.info.antagonist_muscles, "antagonist")
+            if set(agonist_indices).intersection(antagonist_indices):
+                raise ValueError("A muscle cannot belong to both the agonist and antagonist groups.")
+            group_colors.update({int(index): "tab:red" for index in agonist_indices})
+            group_colors.update({int(index): "tab:blue" for index in antagonist_indices})
         fatigue_fig, fatigue_ax = plt.subplots(figsize=(7, 5))
-
-        for indices, names, color, label in (
-            (agonist_indices, agonist_names, "tab:red", "Agonists"),
-            (antagonist_indices, antagonist_names, "tab:blue", "Antagonists"),
-        ):
-            for index, name in zip(indices, names):
-                fatigue_ax.plot(time, fatigue_states[index], color=color, alpha=0.45, label=name)
-            mean_state = fatigue_states[indices].mean(axis=0)
-            fatigue_ax.plot(time, mean_state, color=color, linewidth=2.5, label=f"{label} mean")
+        for index in selected_indices:
+            name = self.muscle_names[index] if self.muscle_names else f"muscle {index}"
+            fatigue_ax.plot(
+                time, fatigue_states[index], color=group_colors.get(index), alpha=0.45, label=name,
+            )
+        if show_agonist_antagonist:
+            for indices, label, color in (
+                (agonist_indices, "Agonists", "tab:red"),
+                (antagonist_indices, "Antagonists", "tab:blue"),
+            ):
+                mean_state = fatigue_states[indices].mean(axis=0)
+                fatigue_ax.plot(time, mean_state, color=color, linewidth=2.5, label=f"{label} mean")
         fatigue_ax.set_xlabel("Time [s]")
         fatigue_ax.set_ylabel("Fatigue state")
         fatigue_ax.set_ylim(0, 1)
-        fatigue_ax.set_title("Agonist–antagonist fatigue progression")
+        fatigue_ax.set_title(
+            "Agonist–antagonist fatigue progression"
+            if show_agonist_antagonist else "Muscle fatigue progression"
+        )
         fatigue_ax.grid(True, alpha=0.3)
         fatigue_ax.legend(fontsize="small")
 
@@ -703,6 +732,9 @@ if __name__ == "__main__":
                         help="Joint coordinate indices to plot (two or three).")
     parser.add_argument("--slice-coordinate", help="Joint coordinate index or name to slice.")
     parser.add_argument("--muscle", help="Muscle name or column index")
+    parser.add_argument("--muscles", nargs="+", help="Muscle names or column indices for optimization fatigue traces")
+    parser.add_argument("--agonist-antagonist", action="store_true",
+                        help="Overlay agonist/antagonist fatigue group means in the optimization view")
     parser.add_argument("--force", type=int, default=0, help="Flattened force index")
     parser.add_argument("--backend", choices=["matplotlib", "simbody"], default="matplotlib")
     parser.add_argument("--slice-axis", choices=["x", "y", "z"])
@@ -726,12 +758,17 @@ if __name__ == "__main__":
             muscle = int(muscle)
         except ValueError:
             pass
+    muscles = args.muscles
+    if muscles is not None:
+        muscles = [int(value) if value.lstrip("+-").isdigit() else value for value in muscles]
     if args.ocp_result is not None:
         if args.model_path is None:
             parser.error("--model is required with --ocp-result for the Simbody view")
         viewer.show_optimization(
             args.ocp_result,
             force_index=args.force,
+            muscles=muscles,
+            show_agonist_antagonist=args.agonist_antagonist,
             slice_axis=args.slice_axis,
             slice_value=args.slice_value,
             tolerance=args.tolerance,

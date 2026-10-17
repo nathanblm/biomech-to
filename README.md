@@ -14,7 +14,7 @@ so use `0`) and a map with `--field`:
 | `workspace` | None | Sampled positions |
 
 For muscle fields, select a muscle by its saved name (for example,
-`--muscle BIC_long`) or by its column index (for example, `--muscle 0`). Dominance is
+`--muscle BIClong`) or by its column index (for example, `--muscle 0`). Dominance is
 positive when the agonist group accumulates more fatigue, negative when the
 antagonist group does, and near zero when they are similar. The configured
 groups are stored as `agonist_muscles` and `antagonist_muscles` in `ModelInfo`.
@@ -73,3 +73,7 @@ python3 -m code.visualizer results/arm26_3DOF/datasets/msk_dataset_p1e5_m1_d1_fx
 This opens the Simbody dominance map with the OCP trajectory and a fatigue
 chart. `--slice-axis`, `--slice-value`, and `--tolerance` set the slice; opacity
 defaults to `0.5` and can be changed with `--opacity`.
+
+The fatigue chart shows all muscles by default. Use `--muscles` to select traces
+by saved name or column index, and add `--agonist-antagonist` to overlay the
+configured group means

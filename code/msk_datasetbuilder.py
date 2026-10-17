@@ -8,7 +8,6 @@ from itertools import islice
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from rmr_solver import RMRsolver, ActSquared
 from .visualizer import Visualizer
-# These imports also resolve class paths in existing MSKdataset archives.
 from .msk_data import ModelInfo, SampleInputs, SampleResults, FatigueParameters, MSKdataset
 
 osim.Logger.setLevelString("Error")
